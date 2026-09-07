@@ -16,7 +16,7 @@ tested process for every server.
 
 ## Implementation status
 
-- [ ] `system_check.sh` - OS detection and requirement validation
+- [x] `system_check.sh` - OS detection and requirement validation
 - [ ] `update_system.sh`
 - [ ] `create_users.sh`
 - [ ] `configure_ssh.sh`
