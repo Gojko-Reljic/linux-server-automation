@@ -90,7 +90,7 @@ main() {
 
     run_step "System Check" "${SCRIPTS_DIR}/system_check.sh"
 
-    # TODO: run_step "System Update" "${SCRIPTS_DIR}/update_system.sh"
+    run_step "System Update" "${SCRIPTS_DIR}/update_system.sh"
     # TODO: run_step "Users" "${SCRIPTS_DIR}/create_users.sh"
     # TODO: run_step "SSH Configuration" "${SCRIPTS_DIR}/configure_ssh.sh"
     # TODO: run_step "Firewall" "${SCRIPTS_DIR}/configure_firewall.sh"
