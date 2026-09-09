@@ -38,7 +38,7 @@ backup_ssh_config() {
     fi
 
     cp "${SSH_CONFIG}" "${SSH_CONFIG_BACKUP}"
-    log_success "Becked up SSH config to ${SSH_CONFIG_BACKUP}"
+    log_success "Backed up SSH config to ${SSH_CONFIG_BACKUP}"
 
 }
 
