@@ -17,10 +17,10 @@ tested process for every server.
 ## Implementation status
 
 - [x] `system_check.sh` - OS detection and requirement validation
-- [ ] `update_system.sh`
-- [ ] `create_users.sh`
-- [ ] `configure_ssh.sh`
-- [ ] `configure_firewall.sh`
+- [x] `update_system.sh`
+- [x] `create_users.sh`
+- [x] `configure_ssh.sh`
+- [x] `configure_firewall.sh`
 - [ ] `install_nginx.sh`
 - [ ] `install_docker.sh`
 - [ ] `configure_logging.sh`
