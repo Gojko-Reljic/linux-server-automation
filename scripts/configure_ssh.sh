@@ -68,7 +68,7 @@ validate_ssh_config() {
     # it or restarting anything. This is our safety check before we
     # dare to restart the SSH service.
 
-    if ! ssh -t; then
+    if ! sshd -t; then
         log_error "SSH config validation failed! Restoring backup ..."
         cp "${SSH_CONFIG_BACKUP}" "${SSH_CONFIG}"
         log_error "Backup restored. SSH was NOT restored, original config is intact."
@@ -96,9 +96,12 @@ main() {
 
     if (( EUID != 0 )); then
         log_error "This script must be run with root privileges."
+        exit 1
     fi
 
     log_info "=== Configuring SSH ==="
+
+    backup_ssh_config
 
     set_ssh_option "PermitRootLogin" "no"
     set_ssh_option "PasswordAuthentication" "no"
