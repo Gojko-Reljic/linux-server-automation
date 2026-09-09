@@ -9,7 +9,7 @@
 #Called from: deploy.sh
 #-----------------------------------------------------------------------
 
-set -euo pipefall
+set -euo pipefail
 
 readonly COLOR_GREEN="\033[0;32m"
 readonly COLOR_RED="\033[0;31m"
