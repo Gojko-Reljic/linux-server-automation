@@ -22,7 +22,7 @@ tested process for every server.
 - [x] `configure_ssh.sh`
 - [x] `configure_firewall.sh`
 - [x] `install_nginx.sh`
-- [ ] `install_docker.sh`
+- [x] `install_docker.sh`
 - [ ] `configure_logging.sh`
 - [ ] `backup.sh`
 - [ ] `health_check.sh`
