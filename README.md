@@ -21,7 +21,7 @@ tested process for every server.
 - [x] `create_users.sh`
 - [x] `configure_ssh.sh`
 - [x] `configure_firewall.sh`
-- [ ] `install_nginx.sh`
+- [x] `install_nginx.sh`
 - [ ] `install_docker.sh`
 - [ ] `configure_logging.sh`
 - [ ] `backup.sh`

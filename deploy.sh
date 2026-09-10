@@ -94,7 +94,7 @@ main() {
     run_step "Users" "${SCRIPTS_DIR}/create_users.sh"
     run_step "SSH Configuration" "${SCRIPTS_DIR}/configure_ssh.sh"
     run_step "Firewall" "${SCRIPTS_DIR}/configure_firewall.sh"
-    # TODO: run_step "Nginx" "${SCRIPTS_DIR}/install_nginx.sh"
+    run_step "Nginx" "${SCRIPTS_DIR}/install_nginx.sh"
     # TODO: run_step "Docker" "${SCRIPTS_DIR}/install_docker.sh"
     # TODO: run_step "Logging" "${SCRIPTS_DIR}/configure_logging.sh"
     # TODO: run_step "Backup" "${SCRIPTS_DIR}/backup.sh"
