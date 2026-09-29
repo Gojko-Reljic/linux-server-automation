@@ -1,0 +1,2 @@
+[WARN] ssh.socket is active (socket activation): the listening port is set by the socket unit, not by Port in sshd_config.
+[ERROR] SSH access user does not exist: nepostojeci_korisnik

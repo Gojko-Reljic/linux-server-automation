@@ -1,0 +1,2 @@
+$ diff ~/before_broken_test.txt ~/after_broken_test.txt && echo "rollback OK: fajl identican"
+rollback OK: fajl identican

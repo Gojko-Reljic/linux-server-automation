@@ -1,0 +1,3 @@
+[WARN] ssh.socket is active (socket activation): the listening port is set by the socket unit, not by Port in sshd_config.
+Warning: The unit file, source configuration file or drop-ins of ssh.service changed on disk. Run 'systemctl daemon-reload' to reload units.
+[SUCCESS] SSH hardening is active; retain the current session and test a new key-based login before disconnecting.

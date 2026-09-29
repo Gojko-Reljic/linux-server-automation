@@ -1,0 +1,4 @@
+[WARN] ssh.socket is active (socket activation): the listening port is set by the socket unit, not by Port in sshd_config.
+/etc/ssh/sshd_config.d/00-server-automation-hardening.conf: line 8: Bad configuration option: OvoJeNevalidnaDirektiva
+/etc/ssh/sshd_config.d/00-server-automation-hardening.conf: terminating, 1 bad configuration options
+[ERROR] New SSH configuration did not validate or was overridden; restoring the prior drop-in.
