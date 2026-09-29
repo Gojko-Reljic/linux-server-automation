@@ -20,5 +20,5 @@ secrets/
 .vscode/
 .idea/
 
-test-results/
+! docs/test-results/
 *.tmp
