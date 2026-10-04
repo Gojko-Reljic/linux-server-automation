@@ -36,6 +36,17 @@ sudo ./deploy.sh
 
 *(Detailed usage instructions will be added once `deploy.sh` is complete.)*
 
+## Firewall notes
+
+`configure_firewall.sh` is designed to fail closed:
+
+- **Management access first.** `firewall.conf` must contain the management rule (`22/tcp` by default, override with `FIREWALL_MANAGEMENT_RULE`). The script refuses to run without it, applies it first, and sets `default deny incoming` only after every `allow` rule is in place, so an already-active firewall never has a window in which SSH is blocked.
+- **Strict rule format.** Every line must be `PORT/tcp`, `PORT/udp` or `START:END/proto` (ports 1-65535). Anything else is rejected before the firewall is touched.
+- **IPv6 is secure by default.** The script stops unless `IPV6=yes` is set in `/etc/default/ufw`, instead of reporting success while IPv6 traffic is unfiltered. Hosts without IPv6 can opt out explicitly with `FIREWALL_ALLOW_IPV6_DISABLED=true`, which only logs a warning.
+- **Existing rules are preserved.** Rules added by hand are not removed. The script warns and leaves the audit to `ufw status numbered`.
+
+Test evidence is in `docs/test-results/configure_firewall-run-*.txt`.
+
 ## Requirements
 
 - Ubuntu 20.04+ or Debian 11+
