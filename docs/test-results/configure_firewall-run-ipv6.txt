@@ -1,0 +1,51 @@
+# configure_firewall.sh sha256: a4bb45b443bb8058abc8f29c606460739f3a08616af9ccb37d238d86b02551b0
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-04
+# IPv6 policy: the script refuses to run when IPV6 is not enabled in
+# /etc/default/ufw, unless FIREWALL_ALLOW_IPV6_DISABLED=true is set explicitly.
+
+## Test 1: IPV6=no, no opt-out -> refused
+
+$ sudo sed -i 's/^IPV6=yes/IPV6=no/' /etc/default/ufw
+$ sudo ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] IPv6 is not enabled in /etc/default/ufw. Set IPV6=yes, or run with FIREWALL_ALLOW_IPV6_DISABLED=true if this host intentionally has no IPv6.
+exit=1
+$ sudo sed -i 's/^IPV6=no/IPV6=yes/' /etc/default/ufw
+$ grep '^IPV6' /etc/default/ufw
+IPV6=yes
+
+## Test 2: IPV6=no with explicit opt-out -> warning, IPv4 rules applied
+
+$ sudo sed -i 's/^IPV6=yes/IPV6=no/' /etc/default/ufw
+$ sudo FIREWALL_ALLOW_IPV6_DISABLED=true ./scripts/configure_firewall.sh; echo "exit=$?"
+[WARN] IPv6 filtering is disabled in /etc/default/ufw (allowed by FIREWALL_ALLOW_IPV6_DISABLED=true).
+[INFO] Ensuring management access is allowed: 22/tcp
+Skipping adding existing rule
+Skipping adding existing rule
+Skipping adding existing rule
+Default incoming policy changed to 'deny'
+(be sure to update your rules accordingly)
+Default outgoing policy changed to 'allow'
+(be sure to update your rules accordingly)
+Firewall is active and enabled on system startup
+[WARN] Existing UFW rules were intentionally preserved; audit ufw status numbered for stale rules.
+[SUCCESS] === Firewall configuration completed successfully ===
+exit=0
+$ sudo ufw status verbose
+Status: active
+Logging: on (low)
+Default: deny (incoming), allow (outgoing), deny (routed)
+New profiles: skip
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW IN    Anywhere
+80/tcp                     ALLOW IN    Anywhere
+443/tcp                    ALLOW IN    Anywhere
+
+## Restore clean state
+
+$ sudo ufw --force reset
+(six "Backing up ... rules" lines omitted)
+$ sudo sed -i 's/^IPV6=no/IPV6=yes/' /etc/default/ufw
+$ grep '^IPV6' /etc/default/ufw
+IPV6=yes

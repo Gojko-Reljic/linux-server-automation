@@ -1,0 +1,114 @@
+# configure_firewall.sh sha256: a4bb45b443bb8058abc8f29c606460739f3a08616af9ccb37d238d86b02551b0
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-04
+# Config used: config/firewall.conf (22/tcp, 80/tcp, 443/tcp), IPV6=yes
+# Lines marked [host] were run on the KVM host against the VM (192.168.122.13).
+
+## A. Happy path on an inactive UFW
+
+$ sudo ufw --force reset
+(six "Backing up ... rules" lines omitted)
+$ sudo ./scripts/configure_firewall.sh; echo "exit=$?"
+[INFO] Ensuring management access is allowed: 22/tcp
+Rules updated
+Rules updated (v6)
+Rules updated
+Rules updated (v6)
+Rules updated
+Rules updated (v6)
+Default incoming policy changed to 'deny'
+(be sure to update your rules accordingly)
+Default outgoing policy changed to 'allow'
+(be sure to update your rules accordingly)
+Firewall is active and enabled on system startup
+[WARN] Existing UFW rules were intentionally preserved; audit ufw status numbered for stale rules.
+[SUCCESS] === Firewall configuration completed successfully ===
+exit=0
+$ sudo ufw status numbered
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 22/tcp                     ALLOW IN    Anywhere
+[ 2] 80/tcp                     ALLOW IN    Anywhere
+[ 3] 443/tcp                    ALLOW IN    Anywhere
+[ 4] 22/tcp (v6)                ALLOW IN    Anywhere (v6)
+[ 5] 80/tcp (v6)                ALLOW IN    Anywhere (v6)
+[ 6] 443/tcp (v6)               ALLOW IN    Anywhere (v6)
+
+## B. Pattern used by verify_firewall matches an existing rule and rejects a missing one
+
+$ LC_ALL=C sudo ufw status verbose | grep -cE '^22/tcp[[:space:]]+ALLOW'
+1
+$ LC_ALL=C sudo ufw status verbose | grep -cE '^122/tcp[[:space:]]+ALLOW'
+0
+
+## C. External check: allowed vs. not allowed ports
+
+[host] $ timeout 3 bash -c '</dev/tcp/192.168.122.13/8080'; echo "exit=$?"
+exit=124
+[host] $ timeout 3 bash -c '</dev/tcp/192.168.122.13/443'; echo "exit=$?"
+bash: connect: Connection refused
+bash: line 1: /dev/tcp/192.168.122.13/443: Connection refused
+exit=1
+# 8080 is not in the rules: packets are dropped silently (timeout, 124).
+# 443 is allowed but nothing listens: packet reaches the VM and is refused (1).
+
+## D. Manually added rule is preserved (documented behaviour)
+
+$ sudo ufw allow 9999/tcp
+Rule added
+Rule added (v6)
+$ sudo ./scripts/configure_firewall.sh; echo "exit=$?"
+[INFO] Ensuring management access is allowed: 22/tcp
+Skipping adding existing rule
+Skipping adding existing rule (v6)
+Skipping adding existing rule
+Skipping adding existing rule (v6)
+Skipping adding existing rule
+Skipping adding existing rule (v6)
+Default incoming policy changed to 'deny'
+(be sure to update your rules accordingly)
+Default outgoing policy changed to 'allow'
+(be sure to update your rules accordingly)
+Firewall is active and enabled on system startup
+[WARN] Existing UFW rules were intentionally preserved; audit ufw status numbered for stale rules.
+[SUCCESS] === Firewall configuration completed successfully ===
+exit=0
+$ sudo ufw status | grep 9999
+9999/tcp                   ALLOW       Anywhere
+9999/tcp (v6)              ALLOW       Anywhere (v6)
+$ sudo ufw --force delete allow 9999/tcp
+Rule deleted
+Rule deleted (v6)
+$ sudo ufw status | grep 9999
+(no output)
+
+## E. Messy config: CRLF, tab indent, inline comment, blank lines, no trailing newline
+
+$ printf '  # comment\r\n\t22/tcp   # ssh\r\n80/tcp\r\n\r\n   \r\n443/tcp' | sudo tee /tmp/fw-messy.conf >/dev/null
+$ cat -A /tmp/fw-messy.conf
+  # comment^M$
+^I22/tcp   # ssh^M$
+80/tcp^M$
+^M$
+   ^M$
+443/tcp
+(last line has no trailing newline)
+$ sudo FIREWALL_CONFIG=/tmp/fw-messy.conf ./scripts/configure_firewall.sh; echo "exit=$?"
+[INFO] Ensuring management access is allowed: 22/tcp
+Skipping adding existing rule
+Skipping adding existing rule (v6)
+Skipping adding existing rule
+Skipping adding existing rule (v6)
+Skipping adding existing rule
+Skipping adding existing rule (v6)
+Default incoming policy changed to 'deny'
+(be sure to update your rules accordingly)
+Default outgoing policy changed to 'allow'
+(be sure to update your rules accordingly)
+Firewall is active and enabled on system startup
+[WARN] Existing UFW rules were intentionally preserved; audit ufw status numbered for stale rules.
+[SUCCESS] === Firewall configuration completed successfully ===
+exit=0
+# Six "Skipping" lines = three rules (22, 80, 443) parsed, including the last
+# line without a trailing newline.

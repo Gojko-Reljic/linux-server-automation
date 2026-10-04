@@ -1,0 +1,49 @@
+# configure_firewall.sh sha256: a4bb45b443bb8058abc8f29c606460739f3a08616af9ccb37d238d86b02551b0
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-04
+# Negative tests: validation must stop the script before any firewall change.
+#
+# Test configs (all created root-owned in /tmp, except fw-userowned):
+#   fw-empty.conf      empty file
+#   fw-nossh.conf      80/tcp, 443/tcp (no management rule)
+#   fw-option.conf     22/tcp, --force
+#   fw-inject.conf     22/tcp, "80/tcp; reboot"
+#   fw-range.conf      22/tcp, 70000/tcp
+#   fw-userowned.conf  empty file owned by the unprivileged user
+
+$ sudo ufw status verbose > /tmp/ufw-before.txt
+
+$ sudo FIREWALL_CONFIG=/tmp/fw-empty.conf ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] firewall.conf contains no rules.
+exit=1
+
+$ sudo FIREWALL_CONFIG=/tmp/fw-nossh.conf ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] Required management rule '22/tcp' is absent from firewall.conf.
+exit=1
+
+$ sudo FIREWALL_CONFIG=/tmp/fw-option.conf ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] Invalid firewall rule --force (/tmp/fw-option.conf:2): expected PORT/tcp, PORT/udp or START:END/proto
+exit=1
+
+$ sudo FIREWALL_CONFIG=/tmp/fw-inject.conf ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] Invalid firewall rule 80/tcp\;\ reboot (/tmp/fw-inject.conf:2): expected PORT/tcp, PORT/udp or START:END/proto
+exit=1
+
+$ sudo FIREWALL_CONFIG=/tmp/fw-range.conf ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] Port out of range in rule 70000/tcp (/tmp/fw-range.conf:2)
+exit=1
+
+$ sudo FIREWALL_CONFIG=/tmp/fw-userowned.conf ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] Security-sensitive file must be owned by root: /tmp/fw-userowned.conf
+exit=1
+
+$ sudo FIREWALL_MANAGEMENT_RULE='22/tcp;x' ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] Invalid firewall rule 22/tcp\;x (FIREWALL_MANAGEMENT_RULE): expected PORT/tcp, PORT/udp or START:END/proto
+exit=1
+
+$ ./scripts/configure_firewall.sh; echo "exit=$?"
+[ERROR] This script must be run as root (use sudo).
+exit=1
+
+$ sudo ufw status verbose > /tmp/ufw-after.txt
+$ diff /tmp/ufw-before.txt /tmp/ufw-after.txt && echo "NO CHANGE"
+NO CHANGE

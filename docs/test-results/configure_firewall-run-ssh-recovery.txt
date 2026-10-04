@@ -1,0 +1,62 @@
+# configure_firewall.sh sha256: a4bb45b443bb8058abc8f29c606460739f3a08616af9ccb37d238d86b02551b0
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-04
+# Scenario: UFW is already active and the SSH rule (22/tcp) has been removed.
+# Lines marked [host] were run on the KVM host against the VM (192.168.122.13).
+# The existing SSH session stays alive (UFW accepts established connections),
+# but new connections are blocked until the script restores the rule.
+
+$ sudo ufw --force delete allow 22/tcp
+Rule deleted
+Rule deleted (v6)
+$ sudo ufw status numbered
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 80/tcp                     ALLOW IN    Anywhere
+[ 2] 443/tcp                    ALLOW IN    Anywhere
+[ 3] 80/tcp (v6)                ALLOW IN    Anywhere (v6)
+[ 4] 443/tcp (v6)               ALLOW IN    Anywhere (v6)
+
+[host] $ timeout 3 bash -c '</dev/tcp/192.168.122.13/22'; echo "exit=$?"
+exit=124
+
+$ sudo ./scripts/configure_firewall.sh; echo "exit=$?"
+[INFO] Ensuring management access is allowed: 22/tcp
+Rule added
+Rule added (v6)
+Skipping adding existing rule
+Skipping adding existing rule (v6)
+Skipping adding existing rule
+Skipping adding existing rule (v6)
+Default incoming policy changed to 'deny'
+(be sure to update your rules accordingly)
+Default outgoing policy changed to 'allow'
+(be sure to update your rules accordingly)
+Firewall is active and enabled on system startup
+[WARN] Existing UFW rules were intentionally preserved; audit ufw status numbered for stale rules.
+[SUCCESS] === Firewall configuration completed successfully ===
+exit=0
+$ sudo ufw status numbered
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 80/tcp                     ALLOW IN    Anywhere
+[ 2] 443/tcp                    ALLOW IN    Anywhere
+[ 3] 22/tcp                     ALLOW IN    Anywhere
+[ 4] 80/tcp (v6)                ALLOW IN    Anywhere (v6)
+[ 5] 443/tcp (v6)               ALLOW IN    Anywhere (v6)
+[ 6] 22/tcp (v6)                ALLOW IN    Anywhere (v6)
+
+[host] $ timeout 3 bash -c '</dev/tcp/192.168.122.13/22'; echo "exit=$?"
+exit=0
+[host] $ ssh testadmin@192.168.122.13 'echo ssh-ok'
+ssh-ok
+
+# What this proves: the script restores management access on an already-active
+# firewall (new SSH connections work again).
+# What it does not prove: the order "allow before default deny". Here the
+# default policy was already deny, so no lockout window could appear. That
+# order is guaranteed by the sequence in main() (apply_rules, then
+# default deny incoming, then enable), not by this test.
