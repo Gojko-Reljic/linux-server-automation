@@ -1,104 +1,121 @@
 #!/usr/bin/env bash
-#
-#configure_firewall.sh
-#-------------------------------------------------------------------
-#Purpose:  Installs and configures ufw. Denies all incoming traffic 
-#          by default, then explicitly allows the ports listed in 
-#          config/firewall.conf (SSH is allowed FIRST,
-#          before the firewall is enabled, to avoid locking 
-#          ourselves out).
-#Called from: deploy.sh
-#-------------------------------------------------------------------
-
 set -euo pipefail
 
-readonly COLOR_GREEN='\033[0;32m'
-readonly COLOR_RED='\033[0;31m'
-readonly COLOR_RESET='\033[0m'
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "$SCRIPT_DIR/.." && pwd)
+#shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
 
-log_info() {
-    echo -e "${COLOR_GREEN}[INFO]${COLOR_RESET} $*"
+readonly FIREWALL_CONFIG=${FIREWALL_CONFIG:-"$ROOT_DIR/config/firewall.conf"}
+# Management (SSH) rule that must be present in firewall.conf and is applied first.
+# Format: PORT/tcp or PORT/udp (or START:END/proto), If ssh listens on a non-standard port
+# set this explicitly.
+readonly FIREWALL_MANAGEMENT_RULE=${FIREWALL_MANAGEMENT_RULE:-22/tcp}
+#Allow-list grammer for every rule: 22/tcp, 53/udp, 800:8100/tcp
+readonly RULE_REGEX='^[0-9]{1,5}(:[0-9]{1,5})?/(tcp|udp)$'
+readonly ALLOW_IPV6_DISABLED=${FIREWALL_ALLOW_IPV6_DISABLED:-false}
+
+declare -a FIREWALL_RULES=()
+
+validate_rule() {
+    local rule=$1 label=$2 safe ports start end 
+    printf -v safe '%q' "$rule"
+    [[ $rule =~ $RULE_REGEX ]] || die "Invalid firewall rule $safe ($label): expected PORT/tcp, PORT/udp or START:END/proto"
+    ports=${rule%/*}
+    start=${ports%%:*}
+    end=${ports##*:}
+    (( 10#$start >= 1 && 10#$end <= 65535 && 10#$start <= 10#$end )) || die "Port out of range in rule $safe ($label)"
 }
 
-log_error() {
-    echo -e "${COLOR_RED}[ERROR]${COLOR_RESET} $*" >&2
+load_rules() {
+    require_regular_secure_file "$FIREWALL_CONFIG"
+    validate_rule "$FIREWALL_MANAGEMENT_RULE" 'FIREWALL_MANAGEMENT_RULE'
+
+    local raw line lineno=0 has_management=false 
+    while IFS= read -r raw || [[ -n $raw ]]; do
+        (( lineno +=1 ))
+        line=$(normalize_config_line "$raw")
+        [[ -n $line ]] || continue
+        validate_rule "$line" "$FIREWALL_CONFIG:$lineno"
+        FIREWALL_RULES+=("$line")
+        if [[ $line == "$FIREWALL_MANAGEMENT_RULE" ]]; then
+            has_management=true
+        fi
+    done < "$FIREWALL_CONFIG"
+
+    (( ${#FIREWALL_RULES[@]} > 0 )) || die "firewall.conf contains no rules."
+    [[ $has_management == true ]] || die "Required management rule '$FIREWALL_MANAGEMENT_RULE' is absent from firewall.conf."
 }
 
-log_success() {
-    echo -e "${COLOR_GREEN}[SUCCESS]${COLOR_RESET} $*"
-}
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-FIREWALL_CONFIG="${SCRIPT_DIR}/../config/firewall.conf"
-
-ensure_ufw_installed() {
-
-    if command -v ufw &>/dev/null; then
-        log_info "ufw is already installed."
-    else
-        log_info "Installing ufw..."
+ensure_ufw() {
+    if ! command -v ufw >/dev/null 2>&1; then
         export DEBIAN_FRONTEND=noninteractive
-        apt-get install -y ufw
-        log_success "ufw installed."
+        apt-get -o Dpkg::Lock::Timeout=120 update
+        apt-get -o Dpkg::Lock::Timeout=120 install -y ufw
     fi
 
+    require_command ufw
 }
 
-set_default_policies() {
+check_ipv6() {
+    local defaults_file=/etc/default/ufw
+    [[ -r $defaults_file ]] || die "Cannot read $defaults_file."
 
-    log_info "Setting default firewall policies..."
-    ufw default deny incoming
-    ufw default allow outgoing
-
+    if grep -qi '^IPV6=yes[[:space:]]*$' "$defaults_file"; then
+        return 0
+    fi 
+    
+    if [[ $ALLOW_IPV6_DISABLED == true ]]; then 
+        log_warn "IPv6 filtering is disabled in $defaults_file (allowed by FIREWALL_ALLOW_IPV6_DISABLED=true)."
+        return 0
+    fi 
+    
+    die "IPv6 is not enabled in $defaults_file. Set IPV6=yes, or run with FIREWALL_ALLOW_IPV6_DISABLED=true if this host intentionally has no IPv6."
 }
 
-allow_configured_ports() {
-
-    if [[ ! -f "${FIREWALL_CONFIG}" ]]; then
-        log_error "Firewall config files not found: ${FIREWALL_CONFIG}"
-        exit 1
-    fi
-
-    log_info "Allowing ports from ${FIREWALL_CONFIG}..."
-
-    while IFS= read -r port_rule || [[ -n "${port_rule}" ]]; do
-        #skip blank lines
-        [[ -z "${port_rule}" ]] && continue
-
-        #skip comment lines
-        [[ "${port_rule}" == \#* ]] && continue
-
-        ufw allow "${port_rule}"
-        log_info "Allowed port rule: ${port_rule}"
-    done < "${FIREWALL_CONFIG}"
-
+apply_rules() {
+    local rule
+    #Apply management access first. This matters when changing an already-active UFW.
+    ufw allow "$FIREWALL_MANAGEMENT_RULE"
+    for rule in "${FIREWALL_RULES[@]}";do
+        [[ $rule == "$FIREWALL_MANAGEMENT_RULE" ]] && continue
+        ufw allow "$rule"
+    done
 }
 
-enable_firewall() {
+verify_firewall() {
+    local status rule
+    status=$(LC_ALL=C ufw status verbose)
 
-    ufw --force enable
-    log_success "Firewall enabled."
-
+    grep -q '^Status: active' <<< "$status" || die 'UFW is not active after configuration.'
+    grep -q '^Default: deny (incoming)' <<< "$status" || die 'Default incoming policy is not deny.'
+    grep -q '^Default:.*allow (outgoing)' <<< "$status" || die 'Default outgoing policy is not allow.'
+    
+    # Safe to interpolate into a regex: validate_rule only admits digits, ':' and '/tcp|udp'.
+    for rule in "${FIREWALL_RULES[@]}"; do
+         grep -qE "^${rule}[[:space:]]+ALLOW" <<< "$status" \
+        || die "Rule '$rule' is missing from ufw status after configuration."
+    done
 }
+
 
 main() {
+    require_root
+    read_os_release
+    is_supported_debian_family || die "Unsupported OS for UFW: $OS_ID"
+    load_rules
+    ensure_ufw
+    check_ipv6
 
-    if (( EUID != 0)); then
-        log_error "This script must be run with root privileges."
-        exit 1
-    fi
+    log_info "Ensuring management access is allowed: $FIREWALL_MANAGEMENT_RULE"
+    apply_rules
+    ufw default deny incoming
+    ufw default allow outgoing
+    ufw --force enable
+    verify_firewall
 
-    log_info "=== Configuring firewall ==="
-
-    ensure_ufw_installed
-    set_default_policies
-    allow_configured_ports
-    enable_firewall
-
-    log_info "=== Firewall configuration completed successfully ==="
-
+    log_warn 'Existing UFW rules were intentionally preserved; audit ufw status numbered for stale rules.'
+    log_success '=== Firewall configuration completed successfully ==='
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
+main "$@"
