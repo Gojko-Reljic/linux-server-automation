@@ -47,6 +47,20 @@ sudo ./deploy.sh
 
 Test evidence is in `docs/test-results/configure_firewall-run-*.txt`.
 
+## Nginx notes
+
+`install_nginx.sh` is designed to stop before it changes anything it cannot verify:
+
+- **Checks before changes.** It requires root, a supported OS (Ubuntu or Debian), systemd and curl, and it refuses to start if another process already owns port 80. Nginx itself is allowed, so re-running the script on a working server is safe.
+- **Idempotent install.** It always runs `apt-get install`, so an existing installation is updated and a missing one is installed. APT waits up to 120 seconds for the dpkg lock and retries failed downloads.
+- **Version pin.** `NGINX_PACKAGE_VERSION` pins `nginx` and `nginx-common` to the same version, because they depend on each other. APT refuses a downgrade under `-y`. The pin was tested with the Ubuntu archive packages.
+- **Configuration is validated first.** `nginx -t` runs before `systemctl enable --now`, so a broken configuration stops the script without touching the running service.
+- **The health check proves it is Nginx.** One request to `http://127.0.0.1/` (no proxy, with timeouts) must return HTTP 200 and a `Server: nginx` header.
+- **UFW is only warned about.** If UFW is active without a rule for port 80, the script warns, because the local check cannot see the firewall. It does not change firewall rules.
+- **Known limits.** The lock wait is shorter than a long unattended-upgrades run, and a broken configuration is reported with Nginx's own message only.
+
+Test evidence is in `docs/test-results/install_nginx-run-*.txt`.
+
 ## Requirements
 
 - Ubuntu 20.04+ or Debian 11+
