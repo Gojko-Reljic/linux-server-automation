@@ -1,0 +1,193 @@
+# install_nginx.sh sha256: 42e83272ecb27fa14f60bb361be77bfdcc98e695e3d78fb66fa9b13486d63b40
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-07 and 2026-10-08 (UTC)
+# Config used: no config file; NGINX_PACKAGE_VERSION unset in every run of this file; UFW active with 22/tcp, 80/tcp, 443/tcp
+# Lines marked [host] were run on the KVM host against the VM (192.168.122.12).
+# Trimmed for readability (each cut is marked in place): APT "Hit:/Get:" and "Reading ..." lines, needrestart
+# notices, column padding in ss/ufw output. Everything else is verbatim.
+# Environment note (runs dated 2026-10-08): after "virsh snapshot-revert" the VM clock lagged the host by about
+# 10h45m, so APT refused the repositories ("Release file ... is not valid yet"), and unattended-upgrades then held
+# the dpkg lock for about 8 minutes, longer than the script's Dpkg::Lock::Timeout=120 (exit=100, nothing installed).
+# Before the runs below the timers were stopped (systemctl stop apt-daily.timer apt-daily-upgrade.timer) and the
+# clock was set from the RTC (hwclock --hctosys).
+
+## A. Clean installation, default path (no version pin)
+# Start state: snapshot pre-nginx-clean-2 (no nginx), clock corrected, script hash verified.
+
+$ sha256sum scripts/install_nginx.sh
+42e83272ecb27fa14f60bb361be77bfdcc98e695e3d78fb66fa9b13486d63b40  scripts/install_nginx.sh
+$ dpkg -l nginx 2>&1 | tail -n 1
+dpkg-query: no packages found matching nginx
+$ sudo dpkg --audit
+(no output)
+$ ss -Hltnp 'sport = :80'
+(no output)
+$ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+Solving dependencies... Done
+The following additional packages will be installed:
+  nginx-common
+Suggested packages:
+  fcgiwrap nginx-doc ssl-cert
+The following NEW packages will be installed:
+  nginx nginx-common
+0 upgraded, 2 newly installed, 0 to remove and 72 not upgraded.
+Need to get 0 B/655 kB of archives.
+After this operation, 1,864 kB of additional disk space will be used.
+Preconfiguring packages ...
+Selecting previously unselected package nginx-common.
+(Reading database… 98919 files and directories currently installed.)
+Preparing to unpack …/nginx-common_1.28.3-2ubuntu1.11_all.deb…
+Unpacking nginx-common (1.28.3-2ubuntu1.11)…
+Selecting previously unselected package nginx.
+Preparing to unpack …/nginx_1.28.3-2ubuntu1.11_amd64.deb…
+Unpacking nginx (1.28.3-2ubuntu1.11)…
+Setting up nginx-common (1.28.3-2ubuntu1.11)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/nginx.service' → '/usr/lib/systemd/system/nginx.service'.
+Setting up nginx (1.28.3-2ubuntu1.11)…
+ * Upgrading binary nginx   [ OK ]
+Processing triggers for man-db (2.13.1-1build1)…
+Processing triggers for ufw (0.36.2-9build1)…
+(needrestart output omitted: running kernel up to date, no services, containers or sessions to restart)
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Synchronizing state of nginx.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable nginx
+[SUCCESS] Nginx service started and enabled at boot.
+[INFO] Verifying Nginx responds to HTTP requests ...
+[SUCCESS] Nginx responded with HTTP 200.
+[SUCCESS] === Nginx installation completed successfully ===
+exit=0
+$ dpkg-query -W -f='${Version}\n' nginx
+1.28.3-2ubuntu1.11
+$ systemctl is-enabled nginx
+enabled
+$ systemctl is-active nginx
+active
+$ sudo ss -Hltnp 'sport = :80' | grep -c 'users:(("nginx"'
+2
+[host] $ curl --head --max-time 5 http://192.168.122.12/; echo "exit=$?"
+HTTP/1.1 200 OK
+Server: nginx/1.28.3 (Ubuntu)
+Date: Thu, 08 Oct 2026 10:53:45 GMT
+Content-Type: text/html
+Content-Length: 615
+Last-Modified: Thu, 10 Sep 2026 23:08:12 GMT
+Connection: keep-alive
+ETag: "6aa3385c-267"
+Accept-Ranges: bytes
+
+exit=0
+# Two packages (nginx, nginx-common) were installed; check_port_80 passed because port 80 was free, and there is
+# no [WARN] because UFW already has 80/tcp. "0 B/655 kB": the archives were already in the APT cache.
+# The package postinst had already created the nginx.service symlink; the script's "enable --now" confirmed it.
+# Two listeners on port 80 (IPv4 and IPv6) belong to nginx, and the host reaches the same page through UFW.
+
+## B. Who owns port 80, and the pattern check_port_80 relies on
+# Start state: nginx 1.28.3-2ubuntu1.11 installed and running, UFW with 22, 80 and 443 (run of 2026-10-07).
+
+$ sudo ss -Hltnp 'sport = :80'
+LISTEN 0 511 0.0.0.0:80 0.0.0.0:* users:(("nginx",pid=8061,fd=5),("nginx",pid=8060,fd=5),("nginx",pid=8058,fd=5))
+LISTEN 0 511 [::]:80 [::]:* users:(("nginx",pid=8061,fd=6),("nginx",pid=8060,fd=6),("nginx",pid=8058,fd=6))
+$ sudo ss -Hltnp 'sport = :80' | grep -c 'users:(("nginx"'
+2
+$ sudo ss -Hltnp 'sport = :80' | grep -vc 'users:(("nginx"'
+0
+$ systemctl is-active nginx
+active
+$ systemctl is-enabled nginx
+enabled
+$ apt-cache policy nginx
+nginx:
+  Installed: 1.28.3-2ubuntu1.11
+  Candidate: 1.28.3-2ubuntu1.11
+  Version table:
+ *** 1.28.3-2ubuntu1.11 500
+        500 http://cz.archive.ubuntu.com/ubuntu resolute-updates/main amd64 Packages
+        500 http://security.ubuntu.com/ubuntu resolute-security/main amd64 Packages
+        100 /var/lib/dpkg/status
+     1.28.3-2ubuntu1 500
+        500 http://cz.archive.ubuntu.com/ubuntu resolute/main amd64 Packages
+$ sudo ufw status numbered
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 443/tcp                    ALLOW IN    Anywhere
+[ 2] 22/tcp                     ALLOW IN    Anywhere
+[ 3] 80/tcp                     ALLOW IN    Anywhere
+[ 4] 443/tcp (v6)               ALLOW IN    Anywhere (v6)
+[ 5] 22/tcp (v6)                ALLOW IN    Anywhere (v6)
+[ 6] 80/tcp (v6)                ALLOW IN    Anywhere (v6)
+# Control for check_port_80: with sudo, ss -p shows the owner of every listener. The pattern used by the script
+# counts both listeners as nginx (2) and finds zero foreign ones (0), so the script lets nginx's own listener
+# through on re-runs. The opposite case (a foreign process on port 80) is in install_nginx-run-negative.txt, section A.
+
+## C. Re-run on an installed system changes nothing (idempotency)
+# Start state: as in section B.
+
+$ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+nginx is already the newest version (1.28.3-2ubuntu1.11).
+Solving dependencies... Done
+0 upgraded, 0 newly installed, 0 to remove and 71 not upgraded.
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Synchronizing state of nginx.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable nginx
+[SUCCESS] Nginx service started and enabled at boot.
+[INFO] Verifying Nginx responds to HTTP requests ...
+[SUCCESS] Nginx responded with HTTP 200.
+[SUCCESS] === Nginx installation completed successfully ===
+exit=0
+[host] $ curl --head --max-time 5 http://192.168.122.12/; echo "exit=$?"
+HTTP/1.1 200 OK
+Server: nginx/1.28.3 (Ubuntu)
+Date: Wed, 07 Oct 2026 23:45:41 GMT
+Content-Type: text/html
+Content-Length: 615
+Last-Modified: Thu, 10 Sep 2026 23:08:12 GMT
+Connection: keep-alive
+ETag: "6aa3385c-267"
+Accept-Ranges: bytes
+
+exit=0
+# 0 upgraded, 0 newly installed: the second run changed no packages. The port check did not trip on nginx's own
+# listener (no "Port 80 is already in use"), and no [WARN] because UFW has 80/tcp.
+
+## D. Stopped service is started again
+# Start state: as in section B.
+
+$ sudo systemctl stop nginx
+$ systemctl is-active nginx; echo "exit=$?"
+inactive
+exit=3
+$ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+nginx is already the newest version (1.28.3-2ubuntu1.11).
+Solving dependencies... Done
+0 upgraded, 0 newly installed, 0 to remove and 71 not upgraded.
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Synchronizing state of nginx.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable nginx
+[SUCCESS] Nginx service started and enabled at boot.
+[INFO] Verifying Nginx responds to HTTP requests ...
+[SUCCESS] Nginx responded with HTTP 200.
+[SUCCESS] === Nginx installation completed successfully ===
+exit=0
+$ systemctl is-active nginx
+active
+# With the service stopped nothing listens on port 80, so check_port_80 passes; "systemctl enable --now" starts
+# the service again and the local HTTP check (200 + Server: nginx) confirms it answers.

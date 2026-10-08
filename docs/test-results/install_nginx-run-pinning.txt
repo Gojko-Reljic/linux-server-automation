@@ -1,0 +1,179 @@
+# install_nginx.sh sha256: 42e83272ecb27fa14f60bb361be77bfdcc98e695e3d78fb66fa9b13486d63b40
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-07 and 2026-10-08 (UTC)
+# Config used: no config file; NGINX_PACKAGE_VERSION set per command as shown; UFW active with 22/tcp, 80/tcp, 443/tcp
+# Lines marked [host] were run on the KVM host against the VM (192.168.122.12).
+# Trimmed for readability (each cut is marked in place): APT "Hit:/Get:" and "Reading ..." lines, needrestart
+# notices. Everything else is verbatim.
+# Why the script pins two packages: an earlier version pinned only "nginx" and failed on a clean system with
+#   nginx : Depends: nginx-common (= 1.28.3-2ubuntu1) but it is not going to be installed
+# (exit=100, nothing installed), because nginx depends on nginx-common of exactly the same version. The tested
+# script pins nginx and nginx-common to the same version; this file covers that script only.
+# Environment note (runs dated 2026-10-08): timers apt-daily.timer and apt-daily-upgrade.timer were stopped and the
+# VM clock was set from the RTC (hwclock --hctosys) before the runs, see install_nginx-run-happy.txt.
+
+## A. Nonexistent version is rejected, nothing is installed
+# Start state: snapshot pre-nginx-clean-2 (no nginx), clock corrected (run of 2026-10-08).
+
+$ sudo NGINX_PACKAGE_VERSION=9.9.9 ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] Nginx will be pinned to version 9.9.9.
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+Package nginx is not available, but is referred to by another package.
+This may mean that the package is missing, has been obsoleted, or
+is only available from another source
+However the following packages replace it:
+  nginx-common
+
+Package nginx-common is not available, but is referred to by another package.
+This may mean that the package is missing, has been obsoleted, or
+is only available from another source
+
+E: Version '9.9.9' for 'nginx' was not found
+E: Version '9.9.9' for 'nginx-common' was not found
+exit=100
+$ dpkg -l nginx 2>&1 | tail -n 1
+dpkg-query: no packages found matching nginx
+# The pin reached APT for both packages, APT failed (exit=100) and the script stopped before
+# "[SUCCESS] Nginx package installed."; nothing was installed.
+
+## B. Older version on a clean system: nginx and nginx-common are installed together
+# Start state: no nginx (same state as section A), run of 2026-10-08.
+
+$ sudo NGINX_PACKAGE_VERSION=1.28.3-2ubuntu1 ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] Nginx will be pinned to version 1.28.3-2ubuntu1.
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(ten "Hit:/Get:" lines omitted)
+Fetched 1,609 kB in 0s (3,306 kB/s)
+(four "Reading ..."/"Building ..." lines omitted)
+Solving dependencies... Done
+Suggested packages:
+  fcgiwrap nginx-doc ssl-cert
+The following NEW packages will be installed:
+  nginx nginx-common
+0 upgraded, 2 newly installed, 0 to remove and 30 not upgraded.
+Need to get 652 kB of archives.
+After this operation, 1,853 kB of additional disk space will be used.
+Get:1 http://cz.archive.ubuntu.com/ubuntu resolute/main amd64 nginx-common all 1.28.3-2ubuntu1 [36.4 kB]
+Get:2 http://cz.archive.ubuntu.com/ubuntu resolute/main amd64 nginx amd64 1.28.3-2ubuntu1 [616 kB]
+Fetched 652 kB in 0s (2,851 kB/s)
+Preconfiguring packages ...
+Selecting previously unselected package nginx-common.
+(Reading database… 139784 files and directories currently installed.)
+Preparing to unpack …/nginx-common_1.28.3-2ubuntu1_all.deb…
+Unpacking nginx-common (1.28.3-2ubuntu1)…
+Selecting previously unselected package nginx.
+Preparing to unpack …/nginx_1.28.3-2ubuntu1_amd64.deb…
+Unpacking nginx (1.28.3-2ubuntu1)…
+Setting up nginx-common (1.28.3-2ubuntu1)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/nginx.service' → '/usr/lib/systemd/system/nginx.service'.
+Setting up nginx (1.28.3-2ubuntu1)…
+ * Upgrading binary nginx   [ OK ]
+Processing triggers for man-db (2.13.1-1build1)…
+Processing triggers for ufw (0.36.2-9build1)…
+(needrestart output omitted: it reports a pending kernel upgrade, deferred service restarts and outdated ssh sessions left by unattended-upgrades)
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Synchronizing state of nginx.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable nginx
+[SUCCESS] Nginx service started and enabled at boot.
+[INFO] Verifying Nginx responds to HTTP requests ...
+[SUCCESS] Nginx responded with HTTP 200.
+[SUCCESS] === Nginx installation completed successfully ===
+exit=0
+$ dpkg-query -W -f='${Version}\n' nginx
+1.28.3-2ubuntu1
+$ systemctl is-active nginx
+active
+# Both packages came in at 1.28.3-2ubuntu1 (older than the newest 1.28.3-2ubuntu1.11), exit=0.
+
+## C. Run without a pin upgrades both packages to the newest version
+# Start state: end of section B.
+
+$ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+Solving dependencies... Done
+The following additional packages will be installed:
+  nginx-common
+The following packages will be upgraded:
+  nginx nginx-common
+2 upgraded, 0 newly installed, 0 to remove and 30 not upgraded.
+Need to get 0 B/655 kB of archives.
+After this operation, 10.2 kB of additional disk space will be used.
+Preconfiguring packages ...
+(Reading database… 139832 files and directories currently installed.)
+Preparing to unpack …/nginx_1.28.3-2ubuntu1.11_amd64.deb…
+Unpacking nginx (1.28.3-2ubuntu1.11) over (1.28.3-2ubuntu1)…
+Preparing to unpack …/nginx-common_1.28.3-2ubuntu1.11_all.deb…
+Unpacking nginx-common (1.28.3-2ubuntu1.11) over (1.28.3-2ubuntu1)…
+Setting up nginx-common (1.28.3-2ubuntu1.11)…
+Setting up nginx (1.28.3-2ubuntu1.11)…
+ * Upgrading binary nginx   [ OK ]
+Processing triggers for man-db (2.13.1-1build1)…
+Processing triggers for ufw (0.36.2-9build1)…
+(needrestart output omitted: same pending-kernel and deferred-restart notices as in section B)
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Synchronizing state of nginx.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable nginx
+[SUCCESS] Nginx service started and enabled at boot.
+[INFO] Verifying Nginx responds to HTTP requests ...
+[SUCCESS] Nginx responded with HTTP 200.
+[SUCCESS] === Nginx installation completed successfully ===
+exit=0
+$ dpkg-query -W -f='${Version}\n' nginx
+1.28.3-2ubuntu1.11
+# Without a pin both packages were upgraded (2 upgraded) from 1.28.3-2ubuntu1 to 1.28.3-2ubuntu1.11, exit=0.
+
+## D. Pin to the version that is already installed
+# Start state: nginx and nginx-common 1.28.3-2ubuntu1.11 installed and running (run of 2026-10-07).
+
+$ dpkg-query -W -f='${Version}\n' nginx
+1.28.3-2ubuntu1.11
+$ sudo NGINX_PACKAGE_VERSION=1.28.3-2ubuntu1.11 ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] Nginx will be pinned to version 1.28.3-2ubuntu1.11.
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+nginx is already the newest version (1.28.3-2ubuntu1.11).
+nginx-common is already the newest version (1.28.3-2ubuntu1.11).
+Solving dependencies... Done
+0 upgraded, 0 newly installed, 0 to remove and 71 not upgraded.
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Synchronizing state of nginx.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable nginx
+[SUCCESS] Nginx service started and enabled at boot.
+[INFO] Verifying Nginx responds to HTTP requests ...
+[SUCCESS] Nginx responded with HTTP 200.
+[SUCCESS] === Nginx installation completed successfully ===
+exit=0
+# Two lines "already the newest version" (nginx and nginx-common) show that both packages are pinned.
+
+## E. Downgrade is refused, installed version is unchanged
+# Start state: as in section D.
+
+$ sudo NGINX_PACKAGE_VERSION=1.28.3-2ubuntu1 ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] Nginx will be pinned to version 1.28.3-2ubuntu1.
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+Solving dependencies... Done
+The following packages will be DOWNGRADED:
+  nginx nginx-common
+0 upgraded, 0 newly installed, 2 downgraded, 0 to remove and 71 not upgraded.
+E: Packages were downgraded and -y was used without --allow-downgrades.
+exit=100
+$ dpkg-query -W -f='${Version}\n' nginx
+1.28.3-2ubuntu1.11
+# APT refuses to downgrade under -y, the script stops with exit=100 before any success message, and the
+# installed version stays 1.28.3-2ubuntu1.11. An accidental old pin therefore cannot silently downgrade a server.

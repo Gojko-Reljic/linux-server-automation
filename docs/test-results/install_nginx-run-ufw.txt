@@ -1,0 +1,97 @@
+# install_nginx.sh sha256: 42e83272ecb27fa14f60bb361be77bfdcc98e695e3d78fb66fa9b13486d63b40
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-07 (UTC)
+# Config used: no config file; NGINX_PACKAGE_VERSION unset; UFW active, rules changed during the test as shown
+# Lines marked [host] were run on the KVM host against the VM (192.168.122.12).
+# Trimmed for readability (each cut is marked in place): APT "Hit:" and "Reading ..." lines. Everything else is verbatim.
+
+## A. UFW active without a rule for port 80: warning, no external access, then the rule is restored
+# Start state: nginx 1.28.3-2ubuntu1.11 installed and running; UFW active with 22/tcp, 80/tcp and 443/tcp
+# (numbered listing in install_nginx-run-happy.txt, section B).
+
+[host] $ curl --head --max-time 5 http://192.168.122.12/; echo "exit=$?"
+HTTP/1.1 200 OK
+Server: nginx/1.28.3 (Ubuntu)
+Date: Wed, 07 Oct 2026 23:45:41 GMT
+Content-Type: text/html
+Content-Length: 615
+Last-Modified: Thu, 10 Sep 2026 23:08:12 GMT
+Connection: keep-alive
+ETag: "6aa3385c-267"
+Accept-Ranges: bytes
+
+exit=0
+# Baseline: with 80/tcp allowed, the host reaches nginx.
+
+$ sudo ufw --force delete allow 80/tcp
+Rule deleted
+Rule deleted (v6)
+$ sudo ufw status
+Status: active
+
+To                         Action      From
+--                         ------      ----
+443/tcp                    ALLOW       Anywhere
+22/tcp                     ALLOW       Anywhere
+443/tcp (v6)               ALLOW       Anywhere (v6)
+22/tcp (v6)                ALLOW       Anywhere (v6)
+
+$ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+nginx is already the newest version (1.28.3-2ubuntu1.11).
+Solving dependencies... Done
+0 upgraded, 0 newly installed, 0 to remove and 71 not upgraded.
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Synchronizing state of nginx.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable nginx
+[SUCCESS] Nginx service started and enabled at boot.
+[INFO] Verifying Nginx responds to HTTP requests ...
+[SUCCESS] Nginx responded with HTTP 200.
+[WARN] UFW is active but no rule for port 80 was found; Nginx may be unreachable from other hosts.
+[SUCCESS] === Nginx installation completed successfully ===
+exit=0
+[host] $ curl --head --max-time 5 http://192.168.122.12/; echo "exit=$?"
+curl: (28) Connection timed out after 5002 milliseconds
+exit=28
+# The local health check (127.0.0.1) still passed, because UFW does not filter loopback, but the host times out:
+# UFW drops the packets silently (28 = timeout, not "Connection refused"). The [WARN] is the only hint the script
+# gives about this; it does not stop the run (exit=0).
+
+$ sudo ufw allow 80/tcp
+Rule added
+Rule added (v6)
+$ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+nginx is already the newest version (1.28.3-2ubuntu1.11).
+Solving dependencies... Done
+0 upgraded, 0 newly installed, 0 to remove and 71 not upgraded.
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+Synchronizing state of nginx.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable nginx
+[SUCCESS] Nginx service started and enabled at boot.
+[INFO] Verifying Nginx responds to HTTP requests ...
+[SUCCESS] Nginx responded with HTTP 200.
+[SUCCESS] === Nginx installation completed successfully ===
+exit=0
+[host] $ curl --head --max-time 5 http://192.168.122.12/; echo "exit=$?"
+HTTP/1.1 200 OK
+Server: nginx/1.28.3 (Ubuntu)
+Date: Wed, 07 Oct 2026 23:49:57 GMT
+Content-Type: text/html
+Content-Length: 615
+Last-Modified: Thu, 10 Sep 2026 23:08:12 GMT
+Connection: keep-alive
+ETag: "6aa3385c-267"
+Accept-Ranges: bytes
+
+exit=0
+# With the rule back, the [WARN] is gone and the host reaches nginx again (200, exit=0).

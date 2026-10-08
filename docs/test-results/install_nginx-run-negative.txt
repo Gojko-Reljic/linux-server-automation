@@ -1,0 +1,84 @@
+# install_nginx.sh sha256: 42e83272ecb27fa14f60bb361be77bfdcc98e695e3d78fb66fa9b13486d63b40
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-07 and 2026-10-08 (UTC)
+# Config used: no config file; NGINX_PACKAGE_VERSION set only where shown; UFW active with 22/tcp, 80/tcp, 443/tcp
+# Lines marked [host] were run on the Fedora host (the KVM host); all other lines ran on the VM (192.168.122.12).
+# Trimmed for readability (each cut is marked in place): APT "Hit:" and "Reading ..." lines. Everything else is verbatim.
+
+## A. Foreign process on port 80: the script stops before touching the system
+# Start state: snapshot pre-nginx-clean-2 (no nginx), clock corrected (run of 2026-10-08).
+
+# [second terminal on the VM]
+$ sudo python3 -m http.server 80
+Serving HTTP on 0.0.0.0 port 80 (http://0.0.0.0:80/) ...
+# [first terminal]
+$ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[ERROR] Port 80 is already in use by another process: LISTEN 0      5      0.0.0.0:80 0.0.0.0:* users:(("python3",pid=7282,fd=3))
+exit=1
+# [second terminal] Ctrl+C
+^C
+Keyboard interrupt received, exiting.
+$ ss -Hltnp 'sport = :80'
+(no output)
+$ dpkg -l nginx 2>&1 | tail -n 1
+dpkg-query: no packages found matching nginx
+# The error names the owner (python3, pid 7282). There is no "[INFO] === Installing Nginx ===" line and no APT
+# output, so the script stopped in check_port_80, before any step that changes the system.
+# Counterpart (nginx itself on port 80 is allowed): install_nginx-run-happy.txt, sections B and C.
+
+## B. Invalid NGINX_PACKAGE_VERSION is rejected before APT
+# Start state: nginx 1.28.3-2ubuntu1.11 installed (after the clean installation in install_nginx-run-happy.txt, A).
+
+$ sudo NGINX_PACKAGE_VERSION='1.24 foo' ./scripts/install_nginx.sh; echo "exit=$?"
+[ERROR] Invalid NGINX_PACKAGE_VERSION: 1.24 foo
+exit=1
+$ dpkg-query -W -f='${Version}\n' nginx
+1.28.3-2ubuntu1.11
+# The space makes the value fail the regex; no APT command ran and the installed version is unchanged.
+
+## C. Not root
+# Start state: as in section B.
+
+$ ./scripts/install_nginx.sh; echo "exit=$?"
+[ERROR] This script must be run as root (use sudo).
+exit=1
+
+## D. Unsupported OS (Fedora host)
+# Run on the Fedora host, which is not Debian/Ubuntu.
+
+[host] $ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[ERROR] Unsupported OS for Nginx: fedora
+exit=1
+# The script stops at the OS check, before any package or service command.
+
+## E. Broken Nginx configuration stops the script before the service is touched
+# Start state: nginx 1.28.3-2ubuntu1.11 installed and running, UFW with 22, 80 and 443 (run of 2026-10-07).
+
+$ echo 'bogus_directive;' | sudo tee /etc/nginx/conf.d/test-broken.conf >/dev/null
+$ cat /etc/nginx/conf.d/test-broken.conf
+bogus_directive;
+$ sudo nginx -t; echo "exit=$?"
+2026/10/07 23:56:50 [emerg] 10346#10346: unknown directive "bogus_directive" in /etc/nginx/conf.d/test-broken.conf:1
+nginx: configuration file /etc/nginx/nginx.conf test failed
+exit=1
+$ sudo ./scripts/install_nginx.sh; echo "exit=$?"
+[INFO] === Installing Nginx ===
+[INFO] Installing or updating Nginx...
+(five "Hit:" lines and the "Reading package lists", "Building dependency tree", "Reading state information" lines omitted)
+nginx is already the newest version (1.28.3-2ubuntu1.11).
+Solving dependencies... Done
+0 upgraded, 0 newly installed, 0 to remove and 71 not upgraded.
+[SUCCESS] Nginx package installed.
+[INFO] Validating configuration and starting Nginx...
+2026/10/07 23:57:06 [emerg] 10460#10460: unknown directive "bogus_directive" in /etc/nginx/conf.d/test-broken.conf:1
+nginx: configuration file /etc/nginx/nginx.conf test failed
+exit=1
+$ systemctl is-active nginx
+active
+$ sudo rm /etc/nginx/conf.d/test-broken.conf
+$ sudo nginx -t
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+# The script stopped at "nginx -t" (set -e), so "[SUCCESS] Nginx service started and enabled at boot." never
+# appeared and "systemctl enable --now" did not run. The running service kept its old, valid configuration.
+# The only diagnostics are nginx's own two lines; the script prints no "[ERROR]" of its own here
+# (candidate for V2: "nginx -t || die ..."). The test file was removed and the configuration is valid again.
