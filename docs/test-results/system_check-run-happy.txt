@@ -1,0 +1,69 @@
+# system_check.sh sha256: e3f58f1cb8e82c1423b53d5cced2b03f8d23a842c77bce852910644444a525eb
+# lib/common.sh sha256: aa395f9b1fd4a3a8811fdb02cec6d76acb33d11c9554a9dd2bae868fa41f2593
+# OS: Ubuntu 26.04.1 LTS (KVM VM), tested 2026-10-15
+# Config used: defaults, except MIN_DISK_GB=3 (the VM has 4.9 GB free on /, below the default 5 GB)
+# Lines marked [host] were run on the Fedora host. All other lines were run on the VM (192.168.122.12).
+# VM snapshot pre-system-check-test was taken before the tests; the script changes nothing on the system.
+
+
+## A. The files on the VM are byte-identical to the host
+
+[host] $ sha256sum scripts/system_check.sh scripts/lib/common.sh
+e3f58f1cb8e82c1423b53d5cced2b03f8d23a842c77bce852910644444a525eb  scripts/system_check.sh
+aa395f9b1fd4a3a8811fdb02cec6d76acb33d11c9554a9dd2bae868fa41f2593  scripts/lib/common.sh
+$ sha256sum scripts/system_check.sh scripts/lib/common.sh
+e3f58f1cb8e82c1423b53d5cced2b03f8d23a842c77bce852910644444a525eb  scripts/system_check.sh
+aa395f9b1fd4a3a8811fdb02cec6d76acb33d11c9554a9dd2bae868fa41f2593  scripts/lib/common.sh
+# Same hashes on both machines: what was tested is what gets committed.
+$ ls -l scripts/system_check.sh
+-rwxrwxr-x 1 testadmin testadmin 5786 Oct 15 20:38 scripts/system_check.sh
+# Same size (5786). The mode is -rwxrwxr-x here because the file already existed on the VM and scp kept the old
+# permissions; the VM clock is UTC, the host is local time (hence 20:38 against 22:35).
+
+## B. VM environment, needed to read the results
+
+$ grep -E '^(PRETTY_NAME|VERSION_ID|VERSION_CODENAME)=' /etc/os-release
+PRETTY_NAME="Ubuntu 26.04.1 LTS"
+VERSION_ID="26.04"
+VERSION_CODENAME=resolute
+$ free -m
+               total        used        free      shared  buff/cache   available
+Mem:            3398         507        2490           5         625        2890
+Swap:           2044           0        2044
+$ df -hT / /var /home
+Filesystem                        Type  Size  Used Avail Use% Mounted on
+/dev/mapper/ubuntu--vg-ubuntu--lv ext4   12G  5.8G  4.9G  55% /
+/dev/mapper/ubuntu--vg-ubuntu--lv ext4   12G  5.8G  4.9G  55% /
+/dev/mapper/ubuntu--vg-ubuntu--lv ext4   12G  5.8G  4.9G  55% /
+# /, /var and /home are one filesystem, so the script prints the same numbers three times.
+# df -h rounds 4.9 GB up, the script rounds down to 4 GB for display; the decision is made in KB.
+# 4.9 GB is below the default MIN_DISK_GB=5, hence MIN_DISK_GB=3 in the happy path.
+
+## C. Happy path, run as a separate process (the way deploy.sh runs it)
+
+$ sudo env MIN_DISK_GB=3 bash scripts/system_check.sh; echo "exit kod: $?"
+(sudo password prompt omitted)
+[INFO] === Running system check ===
+[INFO] Detected supported OS: ubuntu 26.04 (resolute)
+[INFO] Runtime: apt-get, systemd and required capabilities: OK
+[INFO] Effective RAM: 3398 MB
+[INFO] Free space at /: 4 GB, 642878 inodes
+[INFO] Free space at /var: 4 GB, 642878 inodes
+[INFO] Free space at /home: 4 GB, 642878 inodes
+[SUCCESS] === System check completed successfully ===
+exit kod: 0
+# Effective RAM equals the Mem total from free -m: the VM has no cgroup limit, so the host total is used.
+
+## D. Happy path, executed directly (shebang and executable bit)
+
+$ sudo env MIN_DISK_GB=3 ./scripts/system_check.sh; echo "exit kod: $?"
+[INFO] === Running system check ===
+[INFO] Detected supported OS: ubuntu 26.04 (resolute)
+[INFO] Runtime: apt-get, systemd and required capabilities: OK
+[INFO] Effective RAM: 3398 MB
+[INFO] Free space at /: 4 GB, 642878 inodes
+[INFO] Free space at /var: 4 GB, 642878 inodes
+[INFO] Free space at /home: 4 GB, 642878 inodes
+[SUCCESS] === System check completed successfully ===
+exit kod: 0
+# Identical output: ./scripts/system_check.sh works as documented in the Usage line.

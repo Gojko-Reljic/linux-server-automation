@@ -1,0 +1,238 @@
+# system_check.sh sha256: e3f58f1cb8e82c1423b53d5cced2b03f8d23a842c77bce852910644444a525eb
+# lib/common.sh sha256: aa395f9b1fd4a3a8811fdb02cec6d76acb33d11c9554a9dd2bae868fa41f2593
+# OS: Ubuntu 26.04.1 LTS (KVM VM) for sections A-C; Docker containers on the Fedora host for sections D-G; tested 2026-10-15
+# Config used: environment overrides are shown in each command (MIN_RAM_MB, MIN_DISK_GB)
+# Lines marked [host] were run on the Fedora host (Docker containers). All other lines were run on the VM (192.168.122.12).
+# The script needs systemd, so everything that cannot be reached on the VM (other distributions, no systemd,
+# modified os-release, cgroup limits) is tested in containers. Output of "docker pull" and "docker cp"
+# ("Unable to find image", "Pulling from", "Digest", "Status", "Successfully copied ...") is omitted throughout.
+
+## A. Threshold validation (MIN_RAM_MB, MIN_DISK_GB)
+
+# A1. Before: why validation exists. A threshold taken from the environment and used inside (( )) runs code as root.
+$ cat > /tmp/inject_demo.sh <<'EOF'
+#!/usr/bin/env bash
+MIN_RAM_MB="${MIN_RAM_MB:-512}"
+if (( 1024 >= MIN_RAM_MB )); then echo "OK"; fi
+EOF
+$ sudo rm -f /tmp/pwned
+$ sudo env MIN_RAM_MB='a[$(touch /tmp/pwned)]' bash /tmp/inject_demo.sh
+OK
+$ ls -l /tmp/pwned
+-rw-r--r-- 1 root root 0 Oct 15 20:52 /tmp/pwned
+# The "threshold" executed touch as root and the script reported OK: the attack is silent.
+
+# A2. After: the same value against the real script.
+$ sudo rm -f /tmp/pwned
+$ sudo env MIN_RAM_MB='a[$(touch /tmp/pwned)]' bash scripts/system_check.sh;echo "exit kod: $?"
+[ERROR] MIN_RAM_MB must be a positive integer, got 'a[$(touch /tmp/pwned)]'.
+exit kod: 1
+$ ls -l /tmp/pwned
+ls: cannot access '/tmp/pwned': No such file or directory
+# Rejected before any check runs (not even the "Running system check" line), and nothing was executed.
+
+# A3. Other invalid values, each hitting a different part of ^[1-9][0-9]*$.
+$ sudo env MIN_RAM_MB=abc bash scripts/system_check.sh; echo "exit kod: $?"
+[ERROR] MIN_RAM_MB must be a positive integer, got 'abc'.
+exit kod: 1
+$ sudo env MIN_RAM_MB=0 bash scripts/system_check.sh; echo "exit kod: $?"
+[ERROR] MIN_RAM_MB must be a positive integer, got '0'.
+exit kod: 1
+$ sudo env MIN_RAM_MB=08 bash scripts/system_check.sh; echo "exit kod: $?"
+[ERROR] MIN_RAM_MB must be a positive integer, got '08'.
+exit kod: 1
+$ sudo env MIN_DISK_GB=-5 bash scripts/system_check.sh; echo "exit kod: $?"
+[ERROR] MIN_DISK_GB must be a positive integer, got '-5'.
+exit kod: 1
+# 0 and 08 are valid numbers but rejected on purpose (bash would read 08 as octal). MIN_DISK_GB goes through the same loop.
+
+## B. Privileges: EUID 0 alone is not enough
+
+$ bash scripts/system_check.sh; echo "exit kod: $?"
+[ERROR] This script must be run as root (use sudo).
+exit kod: 1
+$ command -v capsh
+/usr/sbin/capsh
+$ sudo grep CapEff /proc/self/status
+CapEff:	000001ffffffffff
+$ sudo capsh --drop=cap_net_admin -- -c 'grep CapEff /proc/self/status'
+CapEff:	000001ffffffefff
+# Bit 12 (CAP_NET_ADMIN) is gone: the last hex digit changed from f to e.
+$ sudo capsh --drop=cap_net_admin -- -c 'bash scripts/system_check.sh'; echo "exit kod: $?"
+[INFO] === Running system check ===
+[INFO] Detected supported OS: ubuntu 26.04 (resolute)
+[ERROR] Missing CAP_NET_ADMIN; required for firewall and network configuration.
+exit kod: 1
+$ sudo capsh --drop=cap_sys_admin -- -c 'bash scripts/system_check.sh'; echo "exit kod: $?"
+[INFO] === Running system check ===
+[INFO] Detected supported OS: ubuntu 26.04 (resolute)
+[ERROR] Missing CAP_SYS_ADMIN; required for system-level configuration.
+exit kod: 1
+# The process is still root (EUID 0) and passes require_root, but is stopped by the missing capability.
+# The old script only checked EUID, so it would have reported "Root privileges: OK".
+
+## C. Storage: free space and free inodes
+
+$ sudo env MIN_DISK_GB=999 bash scripts/system_check.sh; echo "exit kod: $?"
+[INFO] === Running system check ===
+[INFO] Detected supported OS: ubuntu 26.04 (resolute)
+[INFO] Runtime: apt-get, systemd and required capabilities: OK
+[INFO] Effective RAM: 3398 MB
+[INFO] Free space at /: 4 GB, 642874 inodes
+[ERROR] Not enough disk space at /. Required: 999 GB, available: 4 GB.
+exit kod: 1
+# Stops at the first failing mount point (fail fast), so /var and /home are not printed.
+# The inode count is 642874 here and 642878 in the happy path: the test files created in /tmp in between use inodes.
+
+# The real disk never runs low on inodes, so df is replaced by a stub that reports 10 free inodes.
+# The script is sourced (main does not run because of the BASH_SOURCE guard) and only check_storage is called.
+$ cat > /tmp/stub_df.sh <<'EOF'
+df() {
+    if [[ $1 == -Pi ]]; then
+        printf 'Filesystem Inodes IUsed IFree IUse%% Mounted on\n'
+        printf '/dev/stub 1000 990 10 99%% /\n'
+    else
+        command df "$@"
+    fi
+}
+EOF
+$ sudo env MIN_DISK_GB=1 bash -c 'source scripts/system_check.sh; source /tmp/stub_df.sh; check_storage'; echo "exit kod: $?"
+[INFO] Free space at /: 4 GB, 10 inodes
+[ERROR] Not enough free inodes at /.
+exit kod: 1
+# Space passes (real df -Pk), the inode branch fails on the stubbed value.
+
+## D. OS allowlist on every supported distribution (Docker)
+
+# Helper used for every container test: a fresh container with a copy of the repository at /repo.
+[host] $ sc_new() {
+    local image=$1; shift
+    docker rm -f sc-test >/dev/null 2>&1 || true
+    docker run -d --name sc-test "$@" "$image" sleep 3600 >/dev/null
+    docker cp ~/linux-server-automation sc-test:/repo
+}
+[host] $ for img in ubuntu:22.04 ubuntu:24.04 debian:12 debian:13 ubuntu:20.04 debian:11 fedora:latest; do
+    echo "=== $img ==="
+    sc_new "$img"
+    docker exec sc-test bash /repo/scripts/system_check.sh; echo "exit kod: $?"
+done
+=== ubuntu:22.04 ===
+[INFO] === Running system check ===
+[INFO] Detected supported OS: ubuntu 22.04 (jammy)
+[ERROR] Required command is missing: systemctl
+exit kod: 1
+=== ubuntu:24.04 ===
+[INFO] === Running system check ===
+[INFO] Detected supported OS: ubuntu 24.04 (noble)
+[ERROR] Required command is missing: systemctl
+exit kod: 1
+=== debian:12 ===
+[INFO] === Running system check ===
+[INFO] Detected supported OS: debian 12 (bookworm)
+[ERROR] Required command is missing: systemctl
+exit kod: 1
+=== debian:13 ===
+[INFO] === Running system check ===
+[INFO] Detected supported OS: debian 13 (trixie)
+[ERROR] Required command is missing: systemctl
+exit kod: 1
+=== ubuntu:20.04 ===
+[INFO] === Running system check ===
+[ERROR] Unsupported or EOL release: ubuntu 20.04 (focal). Supported: jammy noble resolute bookworm trixie
+exit kod: 1
+=== debian:11 ===
+[INFO] === Running system check ===
+[ERROR] Unsupported or EOL release: debian 11 (bullseye). Supported: jammy noble resolute bookworm trixie
+exit kod: 1
+=== fedora:latest ===
+[INFO] === Running system check ===
+[ERROR] Unsupported OS 'fedora'. Supported: ubuntu, debian.
+exit kod: 1
+# jammy, noble, bookworm and trixie pass the OS check (resolute passed on the VM, section C of the happy log) and are
+# then stopped by the missing systemctl of a plain image. focal and bullseye are rejected as EOL, fedora as an unsupported OS.
+
+## E. systemctl exists, but systemd is not the init system
+
+[host] $ sc_new ubuntu:22.04
+[host] $ docker exec sc-test bash -c 'apt-get update -qq && apt-get install -y -qq systemd >/dev/null'
+(debconf warning about apt-utils omitted)
+[host] $ docker exec sc-test bash /repo/scripts/system_check.sh; echo "exit kod: $?"
+[INFO] === Running system check ===
+[INFO] Detected supported OS: ubuntu 22.04 (jammy)
+[ERROR] systemd is not the active init system (no /run/systemd/system).
+exit kod: 1
+# With the systemd package installed, require_command systemctl passes, but the script still refuses:
+# systemctl --version would have succeeded here, /run/systemd/system exists only when systemd is PID 1.
+
+## F. /etc/os-release is data, never code
+
+# F1. Before: the old script (last committed version) sources the file, so a modified ID runs as root.
+[host] $ git show HEAD:scripts/system_check.sh > /tmp/system_check_old.sh
+[host] $ grep -n 'source' /tmp/system_check_old.sh
+37:    source /etc/os-release
+[host] $ sc_new ubuntu:22.04
+[host] $ docker cp /tmp/system_check_old.sh sc-test:/tmp/system_check_old.sh
+[host] $ docker exec sc-test sed -i 's/^ID=.*/ID=$(touch \/tmp\/pwned_os)/' /etc/os-release
+[host] $ docker exec sc-test bash /tmp/system_check_old.sh; echo "exit kod: $?"
+[INFO] === Running system check ===
+[INFO] Root privileges: OK
+[INFO] Detected OS:  22.04
+[ERROR]  OS '' is not supported. Supported: ubuntu debian
+exit kod: 1
+[host] $ docker exec sc-test ls -l /tmp/pwned_os
+-rw-r--r--. 1 root root 0 Oct 15 21:18 /tmp/pwned_os
+# The old script reports an ordinary error, but the command in ID was already executed as root during source.
+
+# F2. After: the same modified file against the new script, in a fresh container.
+[host] $ sc_new ubuntu:22.04
+[host] $ docker exec sc-test sed -i 's/^ID=.*/ID=$(touch \/tmp\/pwned_os)/' /etc/os-release
+[host] $ docker exec sc-test bash /repo/scripts/system_check.sh; echo "exit kod: $?"
+[INFO] === Running system check ===
+[ERROR] Unsupported OS '$(touch /tmp/pwned_os)'. Supported: ubuntu, debian.
+exit kod: 1
+[host] $ docker exec sc-test ls -l /tmp/pwned_os
+ls: cannot access '/tmp/pwned_os': No such file or directory
+# read_os_release reads the file with awk, so the value is just text and nothing is executed.
+
+# F3. Missing VERSION_CODENAME and missing VERSION_ID give clear messages instead of "unbound variable".
+[host] $ sc_new ubuntu:22.04
+[host] $ docker exec sc-test sed -i '/^VERSION_CODENAME=/d' /etc/os-release
+[host] $ docker exec sc-test bash /repo/scripts/system_check.sh; echo "exit kod: $?"
+[INFO] === Running system check ===
+[ERROR] No VERSION_CODENAME found for ubuntu 22.04.
+exit kod: 1
+[host] $ sc_new ubuntu:22.04
+[host] $ docker exec sc-test sed -i '/^VERSION_ID=/d' /etc/os-release
+[host] $ docker exec sc-test bash /repo/scripts/system_check.sh; echo "exit kod: $?"
+[INFO] === Running system check ===
+[ERROR] Incomplete /etc/os-release metadata.
+exit kod: 1
+
+## G. Memory: the cgroup limit is respected
+
+[host] $ sc_new ubuntu:22.04 --memory=256m
+[host] $ docker cp /tmp/system_check_old.sh sc-test:/tmp/system_check_old.sh
+[host] $ docker exec sc-test bash -c 'source /tmp/system_check_old.sh; check_ram'; echo "exit kod: $?"
+[INFO] Total RAM: 31980 MB
+exit kod: 0
+[host] $ docker exec sc-test bash -c 'source /repo/scripts/system_check.sh; check_memory'; echo "exit kod: $?"
+[INFO] Effective RAM: 256 MB
+[ERROR] Not enough RAM. Required: 512 MB, available: 256 MB.
+exit kod: 1
+[host] $ docker exec sc-test cat /sys/fs/cgroup/memory.max
+268435456
+# 268435456 bytes = 256 MB. The old check reported the host's 31980 MB for a container limited to 256 MB and passed.
+
+[host] $ sc_new ubuntu:22.04 --memory=1g
+[host] $ docker exec sc-test bash -c 'source /repo/scripts/system_check.sh; check_memory'; echo "exit kod: $?"
+[INFO] Effective RAM: 1024 MB
+exit kod: 0
+# A limit below the host but above the threshold passes.
+
+[host] $ sc_new ubuntu:22.04
+[host] $ docker exec sc-test cat /sys/fs/cgroup/memory.max
+max
+[host] $ docker exec sc-test bash -c 'source /repo/scripts/system_check.sh; check_memory'; echo "exit kod: $?"
+[INFO] Effective RAM: 31980 MB
+exit kod: 0
+# "max" means no limit: it is not used as a number and the host total applies.
