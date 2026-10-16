@@ -63,9 +63,9 @@ Test evidence is in `docs/test-results/install_nginx-run-*.txt`.
 
 ## Requirements
 
-- Ubuntu 20.04+ or Debian 11+
-- Root access (sudo)
-- Minimum 512MB RAM, 5GB free disk space
+- Ubuntu 22.04, 24.04 or 26.04, or Debian 12 or 13 (releases that still get free security updates). End-to-end testing was done on Ubuntu 26.04 only.
+- Root access (sudo), systemd and apt
+- At least 512 MB of usable RAM (the container limit, if there is one) and 5 GB free on each of /, /var and /home
 
 ## Project structure
 
