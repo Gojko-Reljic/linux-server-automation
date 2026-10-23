@@ -1,94 +1,162 @@
 #!/usr/bin/env bash
 #
 #create_users.sh
-#---------------------------------------------------------------------------
-# Purpose:  Creates system users listed in config/users.conf, adds them
-#           to the sudo group, and prepares their .ssh directory.
-#           Safe to run multiple times -existing users are skipped,
-#           not recreated.
-#
-# Called from:  deploy.sh
-#---------------------------------------------------------------------------
+#--------------------------------------------------------
+# Purpose: Create the system users listed in config/users.conf
+#          and grants or removes the sudo role as the config
+#          declares. Safe to run multiple times.
+# Called from: deploy.sh
+# Usage:   sudo ./scripts/create_users.sh
+# Env:     USERS_CONFIG path to the users file
+#                       (default: config/users.conf)
+#--------------------------------------------------------
 
 set -euo pipefail
 
-readonly COLOR_GREEN='\033[0;32m'
-readonly COLOR_RED='\033[0;31m'
-readonly COLOR_RESET='\033[0m'
+#--- Paths and shared library ---------------------------
 
-log_info() {
-    echo -e "${COLOR_GREEN}[INFO]${COLOR_RESET} $*"
-}
-log_error() {
-    echo -e "${COLOR_RED}[ERROR]${COLOR_RESET} $*" >&2
-}
-log_success() {
-    echo -e "${COLOR_GREEN}[SUCCESS]${COLOR_RESET} $*"
-}
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+ROOT_DIR=$(cd -- "${SCRIPT_DIR}/.." && pwd)
 
+#shellcheck source=lib/common.sh
+source "${SCRIPT_DIR}/lib/common.sh"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-USERS_CONFIG="${SCRIPT_DIR}/../config/users.conf"
+readonly USERS_CONFIG=${USERS_CONFIG:-"${ROOT_DIR}/config/users.conf"}
 
+#--- Config loading and validation -----------------------
 
-check_config_exists() {
-    if [[ ! -f "${USERS_CONFIG}" ]]; then
-        log_error "Config file not found: ${USERS_CONFIG}"
-        exit 1
+declare -a USERS=() ROLES=()
+
+load_and_validate_config() {
+
+    require_regular_secure_file "$USERS_CONFIG"
+
+    local raw line username role existing lineno=0
+    while IFS= read -r raw || [[ -n $raw ]]; do
+        lineno=$((lineno+1))
+        line=$(normalize_config_line "$raw")
+        [[ -n $line ]] || continue
+
+        [[ $line != *:*:* ]] || die "Invalid users.conf line $lineno: too many ':' separators."
+        IFS=: read -r username role <<<"$line"
+
+        [[ -n ${username:-} && -n ${role:-} ]] || die "Invalid users.conf line $lineno; expected username:role."
+        [[ $username =~ ^[a-z_][a-z0-9_-]{0,30}$ ]] || die "Unsafe username on line $lineno: $username"
+        [[ $username != root ]] || die "Managing root through users.conf is forbidden."
+        [[ $role == sudo || $role == user ]] || die "Unsupported role on line $lineno: $role"
+
+        for existing in "${USERS[@]}"; do
+            [[ $existing != "$username" ]] || die "Duplicate username on line $lineno: $username"
+        done
+
+        USERS+=("$username")
+        ROLES+=("$role")
+    done < "$USERS_CONFIG"
+
+    (( ${#USERS[@]} > 0 )) || die "users.conf contains no users."
+
+    if [[ " ${ROLES[*]} " == *' sudo '* ]]; then
+        getent group sudo >/dev/null || die "The requested sudo role requires a 'sudo' group."
     fi
+
 }
 
-create_single_user() {
+# --- Account provisioning ------------------------------------------------------------------
 
-    local username="$1"
+ensure_account() {
 
-    if id -u "${username}" &>/dev/null; then
-        log_info "User '${username}' already exists, skipping creation."
+    local username=$1
+    local entry uid home shell
+
+    if entry=$(getent passwd "$username"); then
+        IFS=: read -r _ _ uid _ _ home shell <<<"$entry"
+        (( uid >= 1000 )) || die "Refusing to manage existing system account: $username"
+        [[ $home == "/home/$username" && $shell == /bin/bash ]] \
+            || die "Existing account '$username' violates the managed-account policy (home /home/$username, shell /bin/bash)."
+        log_info "Managed user '$username' already exists."
     else
-        useradd -m -s /bin/bash "${username}"
-        log_success "Created user '${username}'."
+        useradd --create-home --home-dir "/home/$username" --shell /bin/bash "$username"
+        passwd --lock "$username" >/dev/null
+        log_success "Created locked user '$username'; add an authorized key before interactive use."
     fi
 
-    usermod -aG sudo "${username}"
+}
 
-    local ssh_dir="/home/${username}/.ssh"
-    if [[ ! -d "${ssh_dir}" ]]; then
-        mkdir -p "${ssh_dir}"
-        chmod 700 "${ssh_dir}"
-        chown "${username}:${username}" "${ssh_dir}"
-        log_info "Created .ssh directory for '${username}'."
+ensure_ssh_dir() {
+
+    local username=$1
+    local ssh_dir="/home/$username/.ssh"
+    local group
+    group=$(id -gn "$username")
+
+    if [[ -L $ssh_dir ]]; then
+        die "Refusing to touch $ssh_dir: it is a symlink."
+    elif [[ -e $ssh_dir && ! -d $ssh_dir ]]; then
+        die "$ssh_dir exists but is not a directory."
+    elif [[ -d $ssh_dir ]]; then
+        chown "$username:$group" "$ssh_dir"
+        chmod 0700 "$ssh_dir"
+        log_info "Verified owner and mode of $ssh_dir."
+    else
+        install -d -m 0700 -o "$username" -g "$group" "$ssh_dir"
+        log_info "Created $ssh_dir."
     fi
+
 }
 
-create_all_users() {
+apply_role() {
 
-    log_info "Reading users from ${USERS_CONFIG}..."
+    local username=$1 role=$2
+    local user_groups
+    user_groups=$(id -nG "$username")
 
-    while IFS= read -r username || [[ -n "${username}" ]]; do
-        [[ -z "${username}" ]] && continue
-        [[ "${username}" == \#* ]] && continue
+    if [[ $role == sudo ]]; then
+        if [[ " $user_groups " == *' sudo '* ]]; then
+            log_info "'$username' already has the sudo role."
+        else
+            usermod -aG sudo "$username"
+            log_warn "Granted sudo role to '$username'."
+        fi
+    elif [[ " $user_groups " == *' sudo '* ]]; then
+        gpasswd -d "$username" sudo >/dev/null
+        log_warn "Removed sudo role from '$username' (config says 'user')."
+    else
+        log_info "'$username' has no sudo role."
+    fi
 
-        create_single_user "${username}"
-    done<"${USERS_CONFIG}" 
 }
+
+ensure_user() {
+
+    local username=$1 role=$2
+    ensure_account "$username"
+    ensure_ssh_dir "$username"
+    apply_role "$username" "$role"
+
+}
+
+# --- Main ----------------------------------------------------------------------------------
 
 main() {
 
-    if (( EUID !=0 )); then
-        log_error "This sript must be run with root privileges."
-        exit 1
-    fi
+    require_root
+    read_os_release
+    is_supported_debian_family || die "Unsupported OS for user provisioning: ${OS_ID}"
 
-    log_info "=== Creating users ==="
-    
-    check_config_exists
-    create_all_users
+    local cmd
+    for cmd in getent useradd usermod gpasswd passwd install id; do
+        require_command "$cmd"
+    done
 
-    log_info "=== User creation completed successfully ==="
+    load_and_validate_config
+
+    local i
+    for i in "${!USERS[@]}"; do
+        ensure_user "${USERS[$i]}" "${ROLES[$i]}"
+    done
+
+    log_success "=== User provisioning completed successfully ==="
 
 }
 
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-    main "$@"
-fi
-
+main "$@"
