@@ -61,6 +61,20 @@ Test evidence is in `docs/test-results/configure_firewall-run-*.txt`.
 
 Test evidence is in `docs/test-results/install_nginx-run-*.txt`.
 
+## User notes
+
+`create_users.sh` makes the accounts and their sudo role match `config/users.conf`, and is safe to run again:
+
+- **The config is the source of truth.** Each line is `username:role`, where the role is `sudo` or `user`. A `user` account that is in the `sudo` group is removed from it on the next run, so a membership added by hand does not survive.
+- **Validated before anything changes.** The whole file is checked first (username pattern, no `root`, no duplicates, known roles, existing `sudo` group), so a mistake on a late line cannot leave earlier accounts half provisioned. Comments, blank lines, indentation and CRLF line endings are accepted.
+- **Trusted config only.** The file must be a regular file owned by root and not writable by group or others. Symlinks are refused.
+- **Managed accounts only.** An existing account with a UID below 1000, a home other than `/home/<name>` or a shell other than `/bin/bash` is refused instead of modified.
+- **SSH directory.** `.ssh` is created with mode 700 and the right owner, or repaired if it exists. A symlink is refused. `authorized_keys` is not managed.
+- **New accounts are locked.** An administrator installs a public key before anyone logs in. An account with the `sudo` role also needs a password (`sudo passwd <name>`) before `sudo` works, because the default Ubuntu rule asks for one. No `NOPASSWD` rule is added, and re-running the script does not lock the account again.
+- **Known limits.** There is no rollback: the checks on existing accounts run per account inside the loop, so a failure there leaves the accounts handled before it. An open session could swap `.ssh` for a symlink between the check and the `chown`. Both are planned for V2.
+
+Test evidence is in `docs/test-results/create_users-run-*.txt`. The tests ran on Ubuntu 22.04 in a container.
+
 ## Requirements
 
 - Ubuntu 22.04, 24.04 or 26.04, or Debian 12 or 13 (releases that still get free security updates). End-to-end testing was done on Ubuntu 26.04 only.

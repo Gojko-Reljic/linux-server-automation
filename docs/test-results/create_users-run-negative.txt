@@ -1,0 +1,231 @@
+create_users.sh - test run: negative cases
+==========================================
+Date:     2026-10-23
+Script:   scripts/create_users.sh
+sha256:   77d65da352baea2f08855fa00269cec9e51d979eeefe50a2d46a335f02d1b4e9
+OS:       A, B: Fedora host. C-F: Ubuntu 22.04.5 LTS (docker image
+          ubuntu:22.04, fresh container create-users-neg)
+Config:   one deliberately broken config per case, passed through
+          USERS_CONFIG (files in /root/test-configs/)
+Marker:   [host] = run on the Fedora host
+
+Goal: every failure stops with a clear message and exit 1, and a
+rejected run leaves no account behind.
+
+--- Preparation (container) ---------------------------------------------
+
+[host] $ docker run -d --name create-users-neg ubuntu:22.04 sleep infinity
+[host] $ docker cp ~/linux-server-automation create-users-neg:/root/
+Successfully copied 275kB (transferred 534kB) to create-users-neg:/root/
+$ docker exec create-users-neg chown -R root:root /root/linux-server-automation
+$ docker exec create-users-neg chmod -R go-w /root/linux-server-automation
+$ docker exec create-users-neg stat -c '%U:%G %a %n' <users.conf> <common.sh> <create_users.sh>
+root:root 644 /root/linux-server-automation/config/users.conf
+root:root 644 /root/linux-server-automation/scripts/lib/common.sh
+root:root 755 /root/linux-server-automation/scripts/create_users.sh
+$ docker exec create-users-neg sha256sum /root/linux-server-automation/scripts/create_users.sh
+77d65da352baea2f08855fa00269cec9e51d979eeefe50a2d46a335f02d1b4e9  ...
+# Same hash as on the host: the tested file is the committed file.
+$ docker exec create-users-neg grep -E '^(PRETTY_NAME|ID|VERSION_ID)=' /etc/os-release
+PRETTY_NAME="Ubuntu 22.04.5 LTS"
+VERSION_ID="22.04"
+ID=ubuntu
+$ docker exec create-users-neg getent passwd deployer webadmin; echo "exit=$?"
+exit=2
+# Clean start: neither account exists.
+
+--- A: not run as root [host] -------------------------------------------
+
+[host] $ sha256sum scripts/create_users.sh
+77d65da352baea2f08855fa00269cec9e51d979eeefe50a2d46a335f02d1b4e9  scripts/create_users.sh
+[host] $ ./scripts/create_users.sh; echo "exit=$?"
+[ERROR] This script must be run as root (use sudo).
+exit=1
+# require_root is the first check in main(); nothing was changed.
+
+--- B: unsupported OS (Fedora) [host] -----------------------------------
+
+[host] $ sudo ./scripts/create_users.sh; echo "exit=$?"
+[ERROR] Unsupported OS for user provisioning: fedora
+exit=1
+[host] $ getent passwd deployer webadmin; echo "exit=$?"
+exit=2
+# The OS check stops the script before any account is touched.
+# (the sudo password prompt is omitted)
+
+--- C: invalid config contents ------------------------------------------
+
+# C1: first line valid, second line invalid. The old script would have
+# created deployer (with sudo) before failing on line 2.
+$ docker exec create-users-neg mkdir -p /root/test-configs
+$ docker exec create-users-neg sh -c "printf 'deployer:sudo\nBad-Name:user\n' > /root/test-configs/c1-bad-second.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/c1-bad-second.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Unsafe username on line 2: Bad-Name
+exit=1
+$ docker exec create-users-neg getent passwd deployer webadmin; echo "exit=$?"
+exit=2
+# Validation runs over the whole file BEFORE the first useradd, so
+# deployer was not created.
+
+# C2: root is forbidden
+$ docker exec create-users-neg sh -c "printf 'root:sudo\n' > /root/test-configs/c2-root.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/c2-root.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Managing root through users.conf is forbidden.
+exit=1
+# root matches the username regex, so a separate check catches it.
+
+# C3: duplicate username
+$ docker exec create-users-neg sh -c "printf 'deployer:sudo\ndeployer:user\n' > /root/test-configs/c3-duplicate.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/c3-duplicate.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Duplicate username on line 2: deployer
+exit=1
+
+# C4: unsupported role
+$ docker exec create-users-neg sh -c "printf 'deployer:admin\n' > /root/test-configs/c4-bad-role.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/c4-bad-role.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Unsupported role on line 1: admin
+exit=1
+
+# C5: too many ':' separators
+$ docker exec create-users-neg sh -c "printf 'deployer:sudo:extra\n' > /root/test-configs/c5-extra-field.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/c5-extra-field.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Invalid users.conf line 1: too many ':' separators.
+exit=1
+
+# C6: line without a role
+$ docker exec create-users-neg sh -c "printf 'deployer\n' > /root/test-configs/c6-no-role.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/c6-no-role.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Invalid users.conf line 1; expected username:role.
+exit=1
+
+# C7: empty file (0 bytes)
+$ docker exec create-users-neg sh -c "printf '' > /root/test-configs/c7-empty.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/c7-empty.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] users.conf contains no users.
+exit=1
+
+# C8: comments and blank lines only
+$ docker exec create-users-neg sh -c "printf '# only a comment\n\n   # another one\n' > /root/test-configs/c8-comments-only.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/c8-comments-only.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] users.conf contains no users.
+exit=1
+# C7 and C8 end the same way: normalize_config_line reduces comments
+# to empty lines, so no user is loaded.
+
+# C9: config file does not exist
+$ docker exec -e USERS_CONFIG=/root/test-configs/does-not-exist.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Required regular file not found: /root/test-configs/does-not-exist.conf
+exit=1
+# This one is rejected by require_regular_secure_file, before any
+# line is read.
+
+$ docker exec create-users-neg getent passwd deployer webadmin; echo "exit=$?"
+exit=2
+# After C1-C9 no account exists.
+
+--- D: existing system account ------------------------------------------
+
+$ docker exec create-users-neg id www-data
+uid=33(www-data) gid=33(www-data) groups=33(www-data)
+$ docker exec create-users-neg sha256sum /etc/passwd /etc/group /etc/shadow
+7a4141683fb585190aaa61c6827a61afd471a1f528e8e0b98746d084a1a3a1a1  /etc/passwd
+639aef8980b6ea2ea640187f4117523b4ade4b7289a5f8b3ef8ad7bb1a731fa7  /etc/group
+61c38d4e5ee39c45bc7441a2d52a2b12dd399806d312a6effc351dc97de3daf5  /etc/shadow
+$ docker exec create-users-neg sh -c "printf 'www-data:user\ndeployer:sudo\n' > /root/test-configs/d-system-account.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/d-system-account.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Refusing to manage existing system account: www-data
+exit=1
+$ docker exec create-users-neg sha256sum /etc/passwd /etc/group /etc/shadow
+7a4141683fb585190aaa61c6827a61afd471a1f528e8e0b98746d084a1a3a1a1  /etc/passwd
+639aef8980b6ea2ea640187f4117523b4ade4b7289a5f8b3ef8ad7bb1a731fa7  /etc/group
+61c38d4e5ee39c45bc7441a2d52a2b12dd399806d312a6effc351dc97de3daf5  /etc/shadow
+$ docker exec create-users-neg getent passwd deployer; echo "exit=$?"
+exit=2
+# UID 33 is below 1000, so the account is refused. Identical hashes
+# before and after: nothing in /etc was touched.
+# Known limit: this check lives in ensure_account (inside the loop). The
+# system account is deliberately the FIRST line here; had it come after
+# deployer, deployer would already exist. A preflight pass for existing
+# accounts is left for V2, together with real rollback.
+
+--- E: existing account outside the managed-account policy --------------
+
+$ docker exec create-users-neg useradd -m -d /srv/altuser -s /bin/bash altuser
+$ docker exec create-users-neg useradd -m -s /bin/sh shuser
+$ docker exec create-users-neg getent passwd altuser shuser
+altuser:x:1000:1000::/srv/altuser:/bin/bash
+shuser:x:1001:1001::/home/shuser:/bin/sh
+$ docker exec create-users-neg sh -c "printf 'altuser:user\n' > /root/test-configs/e1-other-home.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/e1-other-home.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Existing account 'altuser' violates the managed-account policy (home /home/altuser, shell /bin/bash).
+exit=1
+$ docker exec create-users-neg sh -c "printf 'shuser:user\n' > /root/test-configs/e2-other-shell.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/e2-other-shell.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Existing account 'shuser' violates the managed-account policy (home /home/shuser, shell /bin/bash).
+exit=1
+$ docker exec create-users-neg getent passwd altuser shuser
+altuser:x:1000:1000::/srv/altuser:/bin/bash
+shuser:x:1001:1001::/home/shuser:/bin/sh
+$ docker exec create-users-neg ls -d /home/altuser; echo "exit=$?"
+ls: cannot access '/home/altuser': No such file or directory
+exit=2
+$ docker exec create-users-neg test -e /srv/altuser/.ssh; echo "exit=$?"
+exit=1
+# Both accounts have UID >= 1000, so they fail on the home/shell check.
+# The old script would have created .ssh under /home/altuser (the wrong
+# place); now nothing is created, neither there nor in /srv/altuser.
+
+--- F: insecure config file ---------------------------------------------
+
+# F1: writable by group/others
+$ docker exec create-users-neg sh -c "printf 'deployer:sudo\n' > /root/test-configs/f1-writable.conf"
+$ docker exec create-users-neg chmod 666 /root/test-configs/f1-writable.conf
+$ docker exec create-users-neg stat -c '%U:%G %a %n' /root/test-configs/f1-writable.conf
+root:root 666 /root/test-configs/f1-writable.conf
+$ docker exec -e USERS_CONFIG=/root/test-configs/f1-writable.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Security-sensitive file is group/world-writable: /root/test-configs/f1-writable.conf
+exit=1
+
+# F2: owner is not root
+$ docker exec create-users-neg sh -c "printf 'deployer:sudo\n' > /root/test-configs/f2-owner.conf"
+$ docker exec create-users-neg chown nobody:nogroup /root/test-configs/f2-owner.conf
+$ docker exec create-users-neg stat -c '%U:%G %a %n' /root/test-configs/f2-owner.conf
+nobody:nogroup 644 /root/test-configs/f2-owner.conf
+$ docker exec -e USERS_CONFIG=/root/test-configs/f2-owner.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Security-sensitive file must be owned by root: /root/test-configs/f2-owner.conf
+exit=1
+
+# F3: config is a symlink
+$ docker exec create-users-neg sh -c "printf 'deployer:sudo\n' > /root/test-configs/f3-target.conf"
+$ docker exec create-users-neg ln -s /root/test-configs/f3-target.conf /root/test-configs/f3-link.conf
+$ docker exec create-users-neg ls -l /root/test-configs/f3-link.conf
+lrwxrwxrwx. 1 root root 33 Oct 23 21:05 /root/test-configs/f3-link.conf -> /root/test-configs/f3-target.conf
+$ docker exec -e USERS_CONFIG=/root/test-configs/f3-link.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] Required regular file not found: /root/test-configs/f3-link.conf
+exit=1
+# (the trailing "." after the permissions is the SELinux context marker
+#  shown by the Fedora host)
+# The target of the link is a perfectly valid config; the symlink
+# itself is what gets refused (-f && ! -L covers both cases with one
+# message).
+
+$ docker exec create-users-neg getent passwd deployer; echo "exit=$?"
+exit=2
+# deployer was never created in this container.
+
+--- G: sudo group missing -----------------------------------------------
+
+$ docker exec create-users-neg groupdel sudo
+$ docker exec create-users-neg getent group sudo; echo "exit=$?"
+exit=2
+$ docker exec create-users-neg sh -c "printf 'deployer:sudo\n' > /root/test-configs/g-no-sudo-group.conf"
+$ docker exec -e USERS_CONFIG=/root/test-configs/g-no-sudo-group.conf create-users-neg /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[ERROR] The requested sudo role requires a 'sudo' group.
+exit=1
+$ docker exec create-users-neg getent passwd deployer; echo "exit=$?"
+exit=2
+# The group check lives in load_and_validate_config, before the first
+# useradd. The scenario "useradd succeeds, usermod fails because the
+# group is missing" cannot happen: deployer was not created.
+
+Result: PASS (A-G)

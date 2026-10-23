@@ -1,0 +1,139 @@
+create_users.sh - test run: .ssh handling and sudo behaviour
+============================================================
+Date:     2026-10-23
+Script:   scripts/create_users.sh
+sha256:   77d65da352baea2f08855fa00269cec9e51d979eeefe50a2d46a335f02d1b4e9
+OS:       Ubuntu 22.04.5 LTS (docker image ubuntu:22.04)
+Config:   config/users.conf (deployer:sudo, webadmin:user)
+Container: create-users-test, the same container as the happy-path run;
+          deployer and webadmin already exist from that run, and the
+          script has already been run several times against them.
+
+Goal: show how the script treats an existing .ssh directory (wrong
+owner/mode, symlink, missing), and what a locked sudo account can
+actually do.
+
+--- A: existing .ssh with wrong owner and mode --------------------------
+
+$ docker exec create-users-test chown root:root /home/deployer/.ssh
+$ docker exec create-users-test chmod 755 /home/deployer/.ssh
+$ docker exec create-users-test chmod 777 /home/webadmin/.ssh
+$ docker exec create-users-test stat -c '%U:%G %a %n' /home/deployer/.ssh /home/webadmin/.ssh
+root:root 755 /home/deployer/.ssh
+webadmin:webadmin 777 /home/webadmin/.ssh
+$ docker exec create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[INFO] Managed user 'deployer' already exists.
+[INFO] Verified owner and mode of /home/deployer/.ssh.
+[INFO] 'deployer' already has the sudo role.
+[INFO] Managed user 'webadmin' already exists.
+[INFO] Verified owner and mode of /home/webadmin/.ssh.
+[INFO] 'webadmin' has no sudo role.
+[SUCCESS] === User provisioning completed successfully ===
+exit=0
+$ docker exec create-users-test stat -c '%U:%G %a %n' /home/deployer/.ssh /home/webadmin/.ssh
+deployer:deployer 700 /home/deployer/.ssh
+webadmin:webadmin 700 /home/webadmin/.ssh
+# Both directories were repaired (owner and mode) through the "Verified"
+# branch. The old script left an existing .ssh exactly as it found it.
+
+--- B: .ssh is a symlink ------------------------------------------------
+
+$ docker exec create-users-test mkdir /root/ssh-target
+$ docker exec create-users-test stat -c '%U:%G %a %n' /root/ssh-target
+root:root 755 /root/ssh-target
+$ docker exec create-users-test rmdir /home/deployer/.ssh
+$ docker exec create-users-test ln -s /root/ssh-target /home/deployer/.ssh
+$ docker exec create-users-test ls -ld /home/deployer/.ssh
+lrwxrwxrwx. 1 root root 16 Oct 23 21:17 /home/deployer/.ssh -> /root/ssh-target
+$ docker exec create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[INFO] Managed user 'deployer' already exists.
+[ERROR] Refusing to touch /home/deployer/.ssh: it is a symlink.
+exit=1
+$ docker exec create-users-test stat -c '%U:%G %a %n' /root/ssh-target
+root:root 755 /root/ssh-target
+# The script refuses to follow the link, and the link target kept its
+# root:root 755. Had the script followed it, chown/chmod would have
+# turned it into deployer:deployer 700. It stopped at the first
+# account, so webadmin was not processed.
+# (the trailing "." after the permissions is the SELinux context marker
+#  shown by the Fedora host)
+
+--- B2: restore, .ssh missing for an existing account -------------------
+
+$ docker exec create-users-test rm /home/deployer/.ssh
+$ docker exec create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[INFO] Managed user 'deployer' already exists.
+[INFO] Created /home/deployer/.ssh.
+[INFO] 'deployer' already has the sudo role.
+[INFO] Managed user 'webadmin' already exists.
+[INFO] Verified owner and mode of /home/webadmin/.ssh.
+[INFO] 'webadmin' has no sudo role.
+[SUCCESS] === User provisioning completed successfully ===
+exit=0
+$ docker exec create-users-test stat -c '%U:%G %a %n' /home/deployer/.ssh /home/webadmin/.ssh
+deployer:deployer 700 /home/deployer/.ssh
+webadmin:webadmin 700 /home/webadmin/.ssh
+# An existing account without .ssh gets it through the "Created" branch
+# (install -d with owner and mode in one step).
+
+--- C: what a locked sudo account can do --------------------------------
+
+# Preparation: the minimal Docker image has the group "sudo" but not the
+# sudo package. (apt output omitted)
+$ docker exec create-users-test which sudo; echo "exit=$?"
+exit=1
+$ docker exec create-users-test apt-get update -qq
+$ docker exec create-users-test apt-get install -y -qq sudo
+(output omitted: Selecting/Unpacking/Setting up sudo 1.9.9-1ubuntu2.7)
+
+$ docker exec create-users-test grep -n '^%sudo' /etc/sudoers
+50:%sudo	ALL=(ALL:ALL) ALL
+# The rule has no NOPASSWD: members of the group must give a password.
+
+# C1: account still locked
+$ docker exec create-users-test passwd -S deployer
+deployer L 10/23/2026 0 99999 7 -1
+$ docker exec create-users-test su - deployer -c 'id; sudo -n true'; echo "exit=$?"
+uid=1000(deployer) gid=1000(deployer) groups=1000(deployer),27(sudo)
+sudo: a password is required
+exit=1
+# deployer is in the sudo group but has no password to give, so sudo
+# does not work yet.
+$ docker exec create-users-test sudo -l -U deployer; echo "exit=$?"
+Matching Defaults entries for deployer on 32623cc0dc49:
+    env_reset, mail_badpass, secure_path=/usr/local/sbin\:/usr/local/bin\:/usr/sbin\:/usr/bin\:/sbin\:/bin\:/snap/bin, use_pty
+
+User deployer may run the following commands on 32623cc0dc49:
+    (ALL : ALL) ALL
+exit=0
+$ docker exec create-users-test sudo -l -U webadmin; echo "exit=$?"
+User webadmin is not allowed to run sudo on 32623cc0dc49.
+exit=0
+# The role is correct on both accounts: deployer may run everything,
+# webadmin may run nothing.
+
+# C2: the administrator sets a password (test-only value)
+$ docker exec create-users-test sh -c "echo 'deployer:TestOnly-123' | chpasswd"
+$ docker exec create-users-test passwd -S deployer
+deployer P 10/23/2026 0 99999 7 -1
+$ docker exec create-users-test su - deployer -c "echo 'TestOnly-123' | sudo -S -p '' id -u"; echo "exit=$?"
+0
+exit=0
+# With a password set, sudo works (id -u prints 0).
+
+# C3: running the script again does not lock the account back
+$ docker exec create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[INFO] Managed user 'deployer' already exists.
+[INFO] Verified owner and mode of /home/deployer/.ssh.
+[INFO] 'deployer' already has the sudo role.
+[INFO] Managed user 'webadmin' already exists.
+[INFO] Verified owner and mode of /home/webadmin/.ssh.
+[INFO] 'webadmin' has no sudo role.
+[SUCCESS] === User provisioning completed successfully ===
+exit=0
+$ docker exec create-users-test passwd -S deployer
+deployer P 10/23/2026 0 99999 7 -1
+# passwd --lock runs only when the account is created; the status stays
+# P after the script runs again.
+
+Result: PASS (A, B, B2, C)

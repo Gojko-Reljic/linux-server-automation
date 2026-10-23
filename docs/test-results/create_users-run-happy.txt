@@ -1,0 +1,162 @@
+create_users.sh - test run: happy path
+======================================
+Date:     2026-10-23
+Script:   scripts/create_users.sh
+sha256:   77d65da352baea2f08855fa00269cec9e51d979eeefe50a2d46a335f02d1b4e9
+OS:       Ubuntu 22.04.5 LTS (docker image ubuntu:22.04, fresh container)
+Config:   config/users.conf (deployer:sudo, webadmin:user), plus
+          grant.conf and messy.conf via USERS_CONFIG
+Marker:   [host] = run on the Fedora host (docker run / docker cp)
+
+--- Preparation ---------------------------------------------------------
+
+[host] $ docker run -d --name create-users-test ubuntu:22.04 sleep infinity
+[host] $ docker cp ~/linux-server-automation create-users-test:/root/
+Successfully copied 263kB (transferred 518kB) to create-users-test:/root/
+$ docker exec create-users-test chown -R root:root /root/linux-server-automation
+$ docker exec create-users-test chmod -R go-w /root/linux-server-automation
+$ docker exec create-users-test stat -c '%U:%G %a %n' <users.conf> <common.sh> <create_users.sh>
+root:root 644 /root/linux-server-automation/config/users.conf
+root:root 644 /root/linux-server-automation/scripts/lib/common.sh
+root:root 755 /root/linux-server-automation/scripts/create_users.sh
+$ docker exec create-users-test sha256sum /root/linux-server-automation/scripts/create_users.sh
+77d65da352baea2f08855fa00269cec9e51d979eeefe50a2d46a335f02d1b4e9  ...
+# Same hash as on the host: the tested file is the committed file.
+
+--- A: first run on a clean system --------------------------------------
+
+$ docker exec create-users-test grep -E '^(PRETTY_NAME|ID|VERSION_ID)=' /etc/os-release
+PRETTY_NAME="Ubuntu 22.04.5 LTS"
+VERSION_ID="22.04"
+ID=ubuntu
+$ docker exec create-users-test cat /root/linux-server-automation/config/users.conf
+# users.conf
+# ---------------------------------------------------------------------
+# Format: username:role
+# Roles:  sudo, user
+# This file controls account privileges. It must be root-owned and not
+# writable by group or others.
+# ---------------------------------------------------------------------
+
+deployer:sudo
+webadmin:user
+# (the last line has no trailing newline, on purpose: it exercises the
+#  "|| [[ -n $raw ]]" part of the read loop)
+$ docker exec create-users-test getent group sudo
+sudo:x:27:
+$ docker exec create-users-test getent passwd deployer webadmin; echo "exit=$?"
+exit=2
+# exit=2: neither account exists before the run.
+
+$ docker exec create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[SUCCESS] Created locked user 'deployer'; add an authorized key before interactive use.
+[INFO] Created /home/deployer/.ssh.
+[WARN] Granted sudo role to 'deployer'.
+[SUCCESS] Created locked user 'webadmin'; add an authorized key before interactive use.
+[INFO] Created /home/webadmin/.ssh.
+[INFO] 'webadmin' has no sudo role.
+[SUCCESS] === User provisioning completed successfully ===
+exit=0
+# Both users are processed, including the last line without newline.
+
+$ docker exec create-users-test getent passwd deployer webadmin
+deployer:x:1000:1000::/home/deployer:/bin/bash
+webadmin:x:1001:1001::/home/webadmin:/bin/bash
+$ docker exec create-users-test id deployer
+uid=1000(deployer) gid=1000(deployer) groups=1000(deployer),27(sudo)
+$ docker exec create-users-test id webadmin
+uid=1001(webadmin) gid=1001(webadmin) groups=1001(webadmin)
+$ docker exec create-users-test stat -c '%U:%G %a %n' /home/deployer/.ssh /home/webadmin/.ssh
+deployer:deployer 700 /home/deployer/.ssh
+webadmin:webadmin 700 /home/webadmin/.ssh
+$ docker exec create-users-test passwd -S deployer
+deployer L 10/23/2026 0 99999 7 -1
+$ docker exec create-users-test passwd -S webadmin
+webadmin L 10/23/2026 0 99999 7 -1
+# sudo is the LAST group of deployer (the case a missing space in the
+# match pattern would break); both passwords are locked (L).
+
+--- B: idempotency ------------------------------------------------------
+
+$ docker exec create-users-test sha256sum /etc/passwd /etc/group /etc/shadow
+c9889b222f5b7683bc40d4ed8acb8317092567b2f992198e08a542fadf137abf  /etc/passwd
+f653521156d39e233367050e703d65075a951e7cd6aed21d8be6452c399c183a  /etc/group
+8c85d7c5adccb5c5b77ebd156324e85e38c134abfb2effd244e9bcb5ca9bc374  /etc/shadow
+$ docker exec create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[INFO] Managed user 'deployer' already exists.
+[INFO] Verified owner and mode of /home/deployer/.ssh.
+[INFO] 'deployer' already has the sudo role.
+[INFO] Managed user 'webadmin' already exists.
+[INFO] Verified owner and mode of /home/webadmin/.ssh.
+[INFO] 'webadmin' has no sudo role.
+[SUCCESS] === User provisioning completed successfully ===
+exit=0
+$ docker exec create-users-test sha256sum /etc/passwd /etc/group /etc/shadow
+c9889b222f5b7683bc40d4ed8acb8317092567b2f992198e08a542fadf137abf  /etc/passwd
+f653521156d39e233367050e703d65075a951e7cd6aed21d8be6452c399c183a  /etc/group
+8c85d7c5adccb5c5b77ebd156324e85e38c134abfb2effd244e9bcb5ca9bc374  /etc/shadow
+# Identical hashes before and after: the second run changed nothing,
+# and it logged no WARN.
+
+--- C: sudo role granted to an existing account -------------------------
+
+$ docker exec create-users-test mkdir -p /root/test-configs
+$ docker exec create-users-test sh -c "printf 'deployer:sudo\nwebadmin:sudo\n' > /root/test-configs/grant.conf"
+$ docker exec create-users-test stat -c '%U:%G %a %n' /root/test-configs/grant.conf
+root:root 644 /root/test-configs/grant.conf
+$ docker exec -e USERS_CONFIG=/root/test-configs/grant.conf create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[INFO] Managed user 'deployer' already exists.
+[INFO] Verified owner and mode of /home/deployer/.ssh.
+[INFO] 'deployer' already has the sudo role.
+[INFO] Managed user 'webadmin' already exists.
+[INFO] Verified owner and mode of /home/webadmin/.ssh.
+[WARN] Granted sudo role to 'webadmin'.
+[SUCCESS] === User provisioning completed successfully ===
+exit=0
+$ docker exec create-users-test id webadmin
+uid=1001(webadmin) gid=1001(webadmin) groups=1001(webadmin),27(sudo)
+# The USERS_CONFIG override works; the grant is logged as WARN.
+
+--- D: sudo role removed ------------------------------------------------
+
+$ docker exec create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[INFO] Managed user 'deployer' already exists.
+[INFO] Verified owner and mode of /home/deployer/.ssh.
+[INFO] 'deployer' already has the sudo role.
+[INFO] Managed user 'webadmin' already exists.
+[INFO] Verified owner and mode of /home/webadmin/.ssh.
+[WARN] Removed sudo role from 'webadmin' (config says 'user').
+[SUCCESS] === User provisioning completed successfully ===
+exit=0
+$ docker exec create-users-test id webadmin
+uid=1001(webadmin) gid=1001(webadmin) groups=1001(webadmin)
+$ docker exec create-users-test id deployer
+uid=1000(deployer) gid=1000(deployer) groups=1000(deployer),27(sudo)
+# sudo was webadmin's LAST group and was still removed; deployer is
+# untouched.
+
+--- E: CRLF, comments and whitespace ------------------------------------
+
+$ docker exec create-users-test sh -c "printf '# comment\r\n   # indented comment\r\n\r\ndeployer:sudo # inline comment\r\n  webadmin:user  \r\n' > /root/test-configs/messy.conf"
+$ docker exec create-users-test cat -A /root/test-configs/messy.conf
+# comment^M$
+   # indented comment^M$
+^M$
+deployer:sudo # inline comment^M$
+  webadmin:user  ^M$
+$ docker exec -e USERS_CONFIG=/root/test-configs/messy.conf create-users-test /root/linux-server-automation/scripts/create_users.sh; echo "exit=$?"
+[INFO] Managed user 'deployer' already exists.
+[INFO] Verified owner and mode of /home/deployer/.ssh.
+[INFO] 'deployer' already has the sudo role.
+[INFO] Managed user 'webadmin' already exists.
+[INFO] Verified owner and mode of /home/webadmin/.ssh.
+[INFO] 'webadmin' has no sudo role.
+[SUCCESS] === User provisioning completed successfully ===
+exit=0
+$ docker exec create-users-test id deployer webadmin
+uid=1000(deployer) gid=1000(deployer) groups=1000(deployer),27(sudo)
+uid=1001(webadmin) gid=1001(webadmin) groups=1001(webadmin)
+# CRLF, indented and inline comments, blank lines and padded entries
+# are all normalized; the result equals the clean config.
+
+Result: PASS (A-E)
