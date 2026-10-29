@@ -1,0 +1,160 @@
+# install_docker.sh - test evidence: happy path and re-run
+# Script sha256: add8d416bbe193f8190818eb67582d338b24509b540ff1c49639059ba796e1f3
+# OS: Ubuntu 26.04.1 LTS (resolute), KVM guest "test-server" (libvirt domain ubuntu25.10)
+# Config: UFW active (22, 80, 443 allowed); ALLOW_DOCKER_WITH_UFW=true; DOCKER_VERSION unset
+# Capture: terminal on stdin, output piped through tee, ANSI color codes stripped
+#          afterwards with sed. All commands ran on the VM.
+# Omitted noise is noted in parentheses.
+
+## A. Fresh install, no version pin (clean VM snapshot)
+
+$ pgrep -af 'unattended-upgrade$|apt.systemd.daily|apt-get|/usr/bin/dpkg' || echo "apt je slobodan"
+apt je slobodan
+# No other apt/dpkg process holds the lock. (echo text: "apt is free")
+
+$ date
+Thu Oct 29 10:54:00 AM UTC 2026
+
+$ sudo env ALLOW_DOCKER_WITH_UFW=true bash scripts/install_docker.sh 2>&1 | tee ~/evidence/t6.txt; rc=${PIPESTATUS[0]}; echo "exit=$rc" >> ~/evidence/t6.txt
+[WARN] Proceeding with UFW and Docker only by explicit acknowledgement; DOCKER-USER chain policy remains your responsibility.
+(apt-get update output omitted: Hit lines, Reading package lists)
+Skipping ca-certificates, it is already installed and upgrade is not set.
+Skipping curl, it is already installed and upgrade is not set.
+Skipping gnupg, it is already installed and upgrade is not set.
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+gpg: directory '/root/.gnupg' created
+gpg: keybox '/root/.gnupg/pubring.kbx' created
+gpg: /root/.gnupg/trustdb.gpg: trustdb created
+[WARN] DOCKER_VERSION is unset; installing the current repository candidate of every Docker package.
+(apt-get update output omitted; this second update fetched InRelease and Packages from download.docker.com)
+The following additional packages will be installed:
+  docker-ce-rootless-extras pigz
+Suggested packages:
+  cgroupfs-mount | cgroup-lite docker-model-plugin
+The following NEW packages will be installed:
+  containerd.io docker-buildx-plugin docker-ce docker-ce-cli
+  docker-ce-rootless-extras docker-compose-plugin pigz
+0 upgraded, 7 newly installed, 0 to remove and 47 not upgraded.
+Need to get 102 MB of archives.
+After this operation, 388 MB of additional disk space will be used.
+Get:1 http://cz.archive.ubuntu.com/ubuntu resolute/universe amd64 pigz amd64 2.8-1build1 [66.8 kB]
+Get:2 https://download.docker.com/linux/ubuntu resolute/stable amd64 containerd.io amd64 2.4.2-3~ubuntu.26.04~resolute [23.3 MB]
+Get:3 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-ce-cli amd64 5:29.9.2-1~ubuntu.26.04~resolute [17.6 MB]
+Get:4 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-ce amd64 5:29.9.2-1~ubuntu.26.04~resolute [24.6 MB]
+Get:5 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-buildx-plugin amd64 0.38.1-1~ubuntu.26.04~resolute [17.8 MB]
+Get:6 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-ce-rootless-extras amd64 5:29.9.2-1~ubuntu.26.04~resolute [10.2 MB]
+Get:7 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-compose-plugin amd64 5.6.1-1~ubuntu.26.04~resolute [8,085 kB]
+Fetched 102 MB in 5s (22.1 MB/s)
+(Selecting / Preparing to unpack / Unpacking lines omitted)
+Setting up docker-buildx-plugin (0.38.1-1~ubuntu.26.04~resolute)…
+Setting up containerd.io (2.4.2-3~ubuntu.26.04~resolute)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/containerd.service' → '/usr/lib/systemd/system/containerd.service'.
+Setting up docker-compose-plugin (5.6.1-1~ubuntu.26.04~resolute)…
+Setting up docker-ce-cli (5:29.9.2-1~ubuntu.26.04~resolute)…
+Setting up pigz (2.8-1build1)…
+Setting up docker-ce-rootless-extras (5:29.9.2-1~ubuntu.26.04~resolute)…
+Setting up docker-ce (5:29.9.2-1~ubuntu.26.04~resolute)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/docker.service' → '/usr/lib/systemd/system/docker.service'.
+Created symlink '/etc/systemd/system/sockets.target.wants/docker.socket' → '/usr/lib/systemd/system/docker.socket'.
+Processing triggers for man-db (2.13.1-1build1)…
+(needrestart summary omitted: deferred service restarts and outdated ssh sessions, none related to Docker)
+Synchronizing state of docker.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable docker
+[SUCCESS] Docker daemon responded; no remote test image was executed.
+[SUCCESS] === Docker installation completed successfully ===
+exit=0
+# Terminal on stdin and stdout piped: the same conditions in which an earlier
+# version of the script stalled. This run finished normally.
+
+$ date
+Thu Oct 29 10:55:20 AM UTC 2026
+# About 80 seconds from start to finish.
+
+$ dpkg-query -W docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+containerd.io	2.4.2-3~ubuntu.26.04~resolute
+docker-buildx-plugin	0.38.1-1~ubuntu.26.04~resolute
+docker-ce	5:29.9.2-1~ubuntu.26.04~resolute
+docker-ce-cli	5:29.9.2-1~ubuntu.26.04~resolute
+docker-compose-plugin	5.6.1-1~ubuntu.26.04~resolute
+# All five packages installed; Engine and CLI share one version.
+
+$ cat /etc/apt/sources.list.d/docker.list
+deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu resolute stable
+# Source written for the detected OS and codename.
+
+$ systemctl is-enabled docker; systemctl is-active docker
+enabled
+active
+
+$ sudo docker images; sudo docker ps -a
+(extra info hint line printed by docker images omitted)
+IMAGE   ID             DISK USAGE   CONTENT SIZE   EXTRA
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+# Both lists are empty: no test image was pulled or run.
+
+$ ls -d /tmp/tmp.* 2>&1
+ls: cannot access '/tmp/tmp.*': No such file or directory
+# The EXIT trap removed the temporary directory.
+
+$ sudo systemctl show docker -p MainPID -p ActiveEnterTimestamp | tee ~/evidence/t6-state.txt
+ActiveEnterTimestamp=Thu 2026-10-29 10:55:01 UTC
+MainPID=14838
+# Reference state of the daemon, compared in section B.
+
+$ grep -E '^(Start-Date|Commandline|End-Date)' /var/log/apt/history.log | tail -n 3
+Start-Date: 2026-10-29  10:54:25
+Commandline: apt-get -o Dpkg::Lock::Timeout=120 -o Acquire::Retries=3 install -y --no-upgrade docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+End-Date: 2026-10-29  10:55:08
+# The apt transaction completed (End-Date present).
+
+## B. Re-run on the installed system (idempotency)
+
+$ pgrep -af 'unattended-upgrade$|apt.systemd.daily|apt-get|/usr/bin/dpkg' || echo "apt je slobodan"
+apt je slobodan
+
+$ date
+Thu Oct 29 10:59:30 AM UTC 2026
+
+$ sudo env ALLOW_DOCKER_WITH_UFW=true bash scripts/install_docker.sh 2>&1 | tee ~/evidence/t7.txt; rc=${PIPESTATUS[0]}; echo "exit=$rc" >> ~/evidence/t7.txt
+(full output kept in t7.txt, filtered below)
+
+$ date
+Thu Oct 29 10:59:54 AM UTC 2026
+
+$ grep -E 'Skipping|newly installed|SUCCESS|WARN|ERROR|exit=' ~/evidence/t7.txt
+[WARN] Proceeding with UFW and Docker only by explicit acknowledgement; DOCKER-USER chain policy remains your responsibility.
+Skipping ca-certificates, it is already installed and upgrade is not set.
+Skipping curl, it is already installed and upgrade is not set.
+Skipping gnupg, it is already installed and upgrade is not set.
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+[WARN] DOCKER_VERSION is unset; installing the current repository candidate of every Docker package.
+Skipping docker-ce, it is already installed and upgrade is not set.
+Skipping docker-ce-cli, it is already installed and upgrade is not set.
+Skipping containerd.io, it is already installed and upgrade is not set.
+Skipping docker-buildx-plugin, it is already installed and upgrade is not set.
+Skipping docker-compose-plugin, it is already installed and upgrade is not set.
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+[SUCCESS] Docker daemon responded; no remote test image was executed.
+[SUCCESS] === Docker installation completed successfully ===
+exit=0
+# Nothing was installed or upgraded (--no-upgrade). No gpg lines: /root/.gnupg already existed.
+
+$ dpkg-query -W docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+containerd.io	2.4.2-3~ubuntu.26.04~resolute
+docker-buildx-plugin	0.38.1-1~ubuntu.26.04~resolute
+docker-ce	5:29.9.2-1~ubuntu.26.04~resolute
+docker-ce-cli	5:29.9.2-1~ubuntu.26.04~resolute
+docker-compose-plugin	5.6.1-1~ubuntu.26.04~resolute
+# Versions unchanged from section A.
+
+$ sudo systemctl show docker -p MainPID -p ActiveEnterTimestamp | tee ~/evidence/t7-state.txt
+ActiveEnterTimestamp=Thu 2026-10-29 10:55:01 UTC
+MainPID=14838
+
+$ diff ~/evidence/t6-state.txt ~/evidence/t7-state.txt && echo "daemon nije restartovan"
+daemon nije restartovan
+# Same MainPID and start time: the re-run did not restart the daemon.
+# (echo text: "daemon was not restarted")
+
+$ ls -d /tmp/tmp.* 2>&1
+ls: cannot access '/tmp/tmp.*': No such file or directory

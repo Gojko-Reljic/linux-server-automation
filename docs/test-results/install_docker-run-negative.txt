@@ -1,0 +1,154 @@
+# install_docker.sh - test evidence: negative scenarios
+# Script sha256: add8d416bbe193f8190818eb67582d338b24509b540ff1c49639059ba796e1f3
+# OS: sections A-C on the Fedora host ([host]); sections D-F on Ubuntu 26.04.1 LTS
+#     (resolute), KVM guest "test-server" (libvirt domain ubuntu25.10)
+# Config: UFW active on the VM (22, 80, 443 allowed); ALLOW_DOCKER_WITH_UFW and
+#         DOCKER_VERSION as shown per section
+# Capture: output redirected to a file with "echo exit=$?" appended, ANSI color
+#          codes stripped afterwards with sed.
+# Every scenario must stop with exit=1 before anything is written to /etc.
+# Omitted noise is noted in parentheses.
+
+## A. [host] Not root
+
+[host] $ docker run --rm --user 1000:1000 --security-opt label=disable \
+    -v "$PWD":/repo:ro ubuntu:24.04 \
+    bash /repo/scripts/install_docker.sh
+[ERROR] This script must be run as root (use sudo).
+exit=1
+# require_root stops the script before anything else runs.
+
+## B. [host] Root, but systemd is not the active init system
+
+[host] $ docker run --rm --security-opt label=disable \
+    -v "$PWD":/repo:ro ubuntu:24.04 \
+    bash /repo/scripts/install_docker.sh
+[ERROR] systemd is not the active init system (no /run/systemd/system).
+exit=1
+# require_systemd stops the script before the first apt-get.
+
+## C. [host] Unsupported distribution (Fedora)
+
+[host] $ sudo bash scripts/install_docker.sh
+[ERROR] Unsupported OS for Docker: fedora
+exit=1
+
+[host] $ ls -l /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc 2>&1
+[host] $ ls -d /tmp/tmp.* 2>&1
+ls: cannot access '/etc/apt/sources.list.d/docker.list': No such file or directory
+ls: cannot access '/etc/apt/keyrings/docker.asc': No such file or directory
+ls: cannot access '/tmp/tmp.*': No such file or directory
+# is_supported_debian_family rejects the host; nothing was written and no
+# temporary directory exists.
+
+## D. Conflicting package installed (runc from the Ubuntu repository)
+
+$ dpkg -l | grep -E 'docker|containerd|runc' || echo "nema paketa"
+nema paketa
+# (echo text: "no packages") Clean system before the test.
+
+$ ls -d /tmp/tmp.* /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc 2>&1
+ls: cannot access '/tmp/tmp.*': No such file or directory
+ls: cannot access '/etc/apt/sources.list.d/docker.list': No such file or directory
+ls: cannot access '/etc/apt/keyrings/docker.asc': No such file or directory
+
+$ sudo apt-get install -y runc
+(output omitted: runc 1.4.0-0ubuntu1 installed from the Ubuntu repository to create the conflict)
+
+$ sudo bash scripts/install_docker.sh > ~/evidence/t3.txt 2>&1; echo "exit=$?" >> ~/evidence/t3.txt
+$ cat ~/evidence/t3.txt
+[ERROR] Conflicting package installed: runc. Review its workloads/data and remove it explicitly before installing Docker CE.
+exit=1
+# The script refuses to continue and removes nothing on its own.
+
+$ ls -l /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc 2>&1
+ls: cannot access '/etc/apt/sources.list.d/docker.list': No such file or directory
+ls: cannot access '/etc/apt/keyrings/docker.asc': No such file or directory
+
+$ ls -d /tmp/tmp.* 2>&1
+ls: cannot access '/tmp/tmp.*': No such file or directory
+
+$ dpkg -l | grep -E 'docker|containerd' || echo "nema docker paketa"
+nema docker paketa
+# No Docker package, repository or key was added.
+
+$ sudo apt-get remove -y runc
+(output omitted: runc removed again)
+
+$ dpkg-query -W -f='${db:Status-Abbrev}\n' runc
+dpkg-query: no packages found matching runc
+
+## E. UFW active, no acknowledgement (ALLOW_DOCKER_WITH_UFW unset)
+
+$ sudo ufw status | head -1
+Status: active
+
+$ sudo bash scripts/install_docker.sh > ~/evidence/t4.txt 2>&1; echo "exit=$?" >> ~/evidence/t4.txt
+$ cat ~/evidence/t4.txt
+[ERROR] UFW is active. Docker-published ports can bypass UFW; create and verify a DOCKER-USER chain policy, then set ALLOW_DOCKER_WITH_UFW=true.
+exit=1
+# The gate stops the install until the operator explicitly acknowledges the
+# Docker/UFW interaction.
+
+$ ls -l /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc 2>&1
+ls: cannot access '/etc/apt/sources.list.d/docker.list': No such file or directory
+ls: cannot access '/etc/apt/keyrings/docker.asc': No such file or directory
+
+$ ls -d /tmp/tmp.* 2>&1
+ls: cannot access '/tmp/tmp.*': No such file or directory
+
+$ dpkg -l | grep -E 'docker|containerd' || echo "nema docker paketa"
+nema docker paketa
+
+## F. Downloaded key does not match the expected fingerprint
+
+# Run on a copy of the script that differs from the tested script in one digit
+# of DOCKER_KEY_FINGERPRINT, so the genuine Docker key is rejected.
+
+$ pgrep -af 'unattended-upgrade$|apt.systemd.daily|apt-get|/usr/bin/dpkg' || echo "apt je slobodan"
+apt je slobodan
+
+$ sudo dpkg --audit
+
+$ dpkg -l | grep -E 'docker|containerd|runc' || echo "nema paketa"
+nema paketa
+
+$ cp scripts/install_docker.sh scripts/install_docker_badfp.sh
+$ sed -i "s/^readonly DOCKER_KEY_FINGERPRINT='9/readonly DOCKER_KEY_FINGERPRINT='0/" scripts/install_docker_badfp.sh
+$ diff scripts/install_docker.sh scripts/install_docker_badfp.sh
+30c30
+< readonly DOCKER_KEY_FINGERPRINT='9DC858229FC7DD38854AE2D88D81803C0EBFCD88'
+---
+> readonly DOCKER_KEY_FINGERPRINT='0DC858229FC7DD38854AE2D88D81803C0EBFCD88'
+# The copy differs from the tested script in exactly one line.
+
+$ sudo env ALLOW_DOCKER_WITH_UFW=true bash scripts/install_docker_badfp.sh > ~/evidence/t5.txt 2>&1; echo "exit=$?" >> ~/evidence/t5.txt
+$ cat ~/evidence/t5.txt
+[WARN] Proceeding with UFW and Docker only by explicit acknowledgement; DOCKER-USER chain policy remains your responsibility.
+(apt-get update output omitted)
+Skipping ca-certificates, it is already installed and upgrade is not set.
+Skipping curl, it is already installed and upgrade is not set.
+Skipping gnupg, it is already installed and upgrade is not set.
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+gpg: directory '/root/.gnupg' created
+gpg: keybox '/root/.gnupg/pubring.kbx' created
+gpg: /root/.gnupg/trustdb.gpg: trustdb created
+[ERROR] Downloaded Docker key does not contain exactly the expected signing key.
+exit=1
+# The key was downloaded and read by gpg, then rejected: its fingerprint does
+# not match the expected one.
+
+$ ls -l /etc/apt/sources.list.d/docker.list /etc/apt/keyrings/docker.asc 2>&1
+ls: cannot access '/etc/apt/sources.list.d/docker.list': No such file or directory
+ls: cannot access '/etc/apt/keyrings/docker.asc': No such file or directory
+# The rejected key and the APT source were never installed.
+
+$ ls -d /tmp/tmp.* 2>&1
+ls: cannot access '/tmp/tmp.*': No such file or directory
+# The downloaded key lived in a temporary directory; the EXIT trap removed it
+# after die.
+
+$ dpkg -l | grep -E 'docker|containerd' || echo "nema docker paketa"
+nema docker paketa
+
+$ rm scripts/install_docker_badfp.sh

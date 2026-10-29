@@ -1,0 +1,229 @@
+# install_docker.sh - test evidence: DOCKER_VERSION pin
+# Script sha256: add8d416bbe193f8190818eb67582d338b24509b540ff1c49639059ba796e1f3
+# OS: Ubuntu 26.04.1 LTS (resolute), KVM guest "test-server" (libvirt domain ubuntu25.10)
+# Config: UFW active (22, 80, 443 allowed); ALLOW_DOCKER_WITH_UFW=true;
+#         DOCKER_VERSION set per section
+# Capture: terminal on stdin, output piped through tee, ANSI color codes stripped
+#          afterwards with sed. All commands ran on the VM.
+# Sections A and B ran back to back on the system left by the happy-path run.
+# Section C ran after a snapshot revert; the VM clock after the revert was
+# earlier than in section B, so timestamps in C are not comparable with A/B.
+# Omitted noise is noted in parentheses.
+
+## Versions offered by the Docker repository
+
+$ apt-cache madison docker-ce | head -n 6
+ docker-ce | 5:29.9.2-1~ubuntu.26.04~resolute | https://download.docker.com/linux/ubuntu resolute/stable amd64 Packages
+ docker-ce | 5:29.9.1-1~ubuntu.26.04~resolute | https://download.docker.com/linux/ubuntu resolute/stable amd64 Packages
+ docker-ce | 5:29.9.0-1~ubuntu.26.04~resolute | https://download.docker.com/linux/ubuntu resolute/stable amd64 Packages
+ docker-ce | 5:29.8.2-1~ubuntu.26.04~resolute | https://download.docker.com/linux/ubuntu resolute/stable amd64 Packages
+ docker-ce | 5:29.8.1-1~ubuntu.26.04~resolute | https://download.docker.com/linux/ubuntu resolute/stable amd64 Packages
+ docker-ce | 5:29.8.0-1~ubuntu.26.04~resolute | https://download.docker.com/linux/ubuntu resolute/stable amd64 Packages
+
+## A. Pin equal to the installed version (docker-ce 5:29.9.2 installed)
+
+$ date
+Thu Oct 29 11:03:34 AM UTC 2026
+
+$ sudo env ALLOW_DOCKER_WITH_UFW=true DOCKER_VERSION='5:29.9.2-1~ubuntu.26.04~resolute' bash scripts/install_docker.sh 2>&1 | tee ~/evidence/t8a.txt; rc=${PIPESTATUS[0]}; echo "exit=$rc" >> ~/evidence/t8a.txt
+(full output kept in t8a.txt, filtered below)
+
+$ date
+Thu Oct 29 11:03:59 AM UTC 2026
+
+$ grep -E 'Skipping|already|newly installed|SUCCESS|WARN|INFO|ERROR|exit=' ~/evidence/t8a.txt
+[WARN] Proceeding with UFW and Docker only by explicit acknowledgement; DOCKER-USER chain policy remains your responsibility.
+Skipping ca-certificates, it is already installed and upgrade is not set.
+Skipping curl, it is already installed and upgrade is not set.
+Skipping gnupg, it is already installed and upgrade is not set.
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+[INFO] DOCKER_VERSION pins docker-ce and docker-ce-cli only; containerd.io, buildx and compose follow the repository candidate.
+Skipping docker-ce, it is already installed and upgrade is not set.
+Skipping docker-ce-cli, it is already installed and upgrade is not set.
+Skipping containerd.io, it is already installed and upgrade is not set.
+Skipping docker-buildx-plugin, it is already installed and upgrade is not set.
+Skipping docker-compose-plugin, it is already installed and upgrade is not set.
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+[SUCCESS] Docker daemon responded; no remote test image was executed.
+[SUCCESS] === Docker installation completed successfully ===
+exit=0
+# The INFO line replaces the "DOCKER_VERSION is unset" warning. The pinned
+# version matches, so the run succeeds without changing anything.
+
+$ dpkg-query -W docker-ce docker-ce-cli
+docker-ce	5:29.9.2-1~ubuntu.26.04~resolute
+docker-ce-cli	5:29.9.2-1~ubuntu.26.04~resolute
+
+$ sudo systemctl show docker -p MainPID -p ActiveEnterTimestamp | tee ~/evidence/t8a-state.txt
+ActiveEnterTimestamp=Thu 2026-10-29 10:55:01 UTC
+MainPID=14838
+
+$ diff ~/evidence/t6-state.txt ~/evidence/t8a-state.txt && echo "daemon nije restartovan"
+daemon nije restartovan
+# Daemon untouched. (echo text: "daemon was not restarted")
+
+## B. Pin older than the installed version (5:29.9.1 requested, 5:29.9.2 installed)
+
+$ pgrep -af 'unattended-upgrade$|apt.systemd.daily|apt-get|/usr/bin/dpkg' || echo "apt je slobodan"
+apt je slobodan
+
+$ date
+Thu Oct 29 11:06:55 AM UTC 2026
+
+$ sudo env ALLOW_DOCKER_WITH_UFW=true DOCKER_VERSION='5:29.9.1-1~ubuntu.26.04~resolute' bash scripts/install_docker.sh 2>&1 | tee ~/evidence/t8b.txt; rc=${PIPESTATUS[0]}; echo "exit=$rc" >> ~/evidence/t8b.txt
+(apt-get update output omitted)
+Skipping docker-ce, it is already installed and upgrade is not set.
+Skipping docker-ce-cli, it is already installed and upgrade is not set.
+Skipping containerd.io, it is already installed and upgrade is not set.
+Skipping docker-buildx-plugin, it is already installed and upgrade is not set.
+Skipping docker-compose-plugin, it is already installed and upgrade is not set.
+Solving dependencies...
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+[ERROR] Installed docker-ce is 5:29.9.2-1~ubuntu.26.04~resolute, expected 5:29.9.1-1~ubuntu.26.04~resolute. No upgrade or downgrade was performed.
+# apt skipped the pinned package because of --no-upgrade; the version check
+# after the install caught the mismatch.
+
+$ date
+Thu Oct 29 11:07:22 AM UTC 2026
+
+$ tail -n 6 ~/evidence/t8b.txt
+Skipping docker-buildx-plugin, it is already installed and upgrade is not set.
+Skipping docker-compose-plugin, it is already installed and upgrade is not set.
+Solving dependencies...
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+[ERROR] Installed docker-ce is 5:29.9.2-1~ubuntu.26.04~resolute, expected 5:29.9.1-1~ubuntu.26.04~resolute. No upgrade or downgrade was performed.
+exit=1
+
+$ dpkg-query -W docker-ce docker-ce-cli containerd.io
+containerd.io	2.4.2-3~ubuntu.26.04~resolute
+docker-ce	5:29.9.2-1~ubuntu.26.04~resolute
+docker-ce-cli	5:29.9.2-1~ubuntu.26.04~resolute
+# No downgrade happened.
+
+$ sudo systemctl show docker -p MainPID -p ActiveEnterTimestamp | tee ~/evidence/t8b-state.txt
+ActiveEnterTimestamp=Thu 2026-10-29 10:55:01 UTC
+MainPID=14838
+
+$ diff ~/evidence/t6-state.txt ~/evidence/t8b-state.txt && echo "daemon nije restartovan"
+daemon nije restartovan
+
+$ grep -E '^(Start-Date|Commandline|End-Date|Downgrade|Upgrade)' /var/log/apt/history.log | tail -n 5
+Upgrade: libnss3:amd64 (2:3.120-1ubuntu2.1, 2:3.120-1ubuntu2.2)
+End-Date: 2026-10-29  10:42:11
+Start-Date: 2026-10-29  10:54:25
+Commandline: apt-get -o Dpkg::Lock::Timeout=120 -o Acquire::Retries=3 install -y --no-upgrade docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+End-Date: 2026-10-29  10:55:08
+# No Downgrade entry and no new transaction after the happy-path install.
+# (The libnss3 Upgrade line belongs to the earlier unattended-upgrade run.)
+
+$ sudo dpkg --audit
+
+$ ls -d /tmp/tmp.* 2>&1
+ls: cannot access '/tmp/tmp.*': No such file or directory
+# dpkg state is consistent and no temporary directory is left behind.
+
+## C. Fresh install with a pin older than the latest (clean VM snapshot)
+
+$ date -u
+Thu Oct 29 10:53:24 AM UTC 2026
+
+$ sudo apt-get update 2>&1 | grep -iE 'not valid yet|^E:' || echo "apt update bez gresaka"
+apt update bez gresaka
+# (echo text: "apt update without errors")
+
+$ while pgrep -f 'unattended-upgrade$|apt.systemd.daily|apt-get|/usr/bin/dpkg' >/dev/null; do sleep 5; done; echo "apt je slobodan"
+apt je slobodan
+
+$ dpkg -l | grep -E 'docker|containerd|runc' || echo "nema paketa"
+nema paketa
+# (echo text: "no packages") Clean system.
+
+$ grep -c 'exec < /dev/null' scripts/install_docker.sh
+1
+
+$ date
+Thu Oct 29 10:54:30 AM UTC 2026
+
+$ sudo env ALLOW_DOCKER_WITH_UFW=true DOCKER_VERSION='5:29.9.1-1~ubuntu.26.04~resolute' bash scripts/install_docker.sh 2>&1 | tee ~/evidence/t9a.txt; rc=${PIPESTATUS[0]}; echo "exit=$rc" >> ~/evidence/t9a.txt
+[WARN] Proceeding with UFW and Docker only by explicit acknowledgement; DOCKER-USER chain policy remains your responsibility.
+(apt-get update output omitted)
+Skipping ca-certificates, it is already installed and upgrade is not set.
+Skipping curl, it is already installed and upgrade is not set.
+Skipping gnupg, it is already installed and upgrade is not set.
+0 upgraded, 0 newly installed, 0 to remove and 47 not upgraded.
+gpg: directory '/root/.gnupg' created
+gpg: keybox '/root/.gnupg/pubring.kbx' created
+gpg: /root/.gnupg/trustdb.gpg: trustdb created
+[INFO] DOCKER_VERSION pins docker-ce and docker-ce-cli only; containerd.io, buildx and compose follow the repository candidate.
+(apt-get update output omitted)
+The following additional packages will be installed:
+  docker-ce-rootless-extras pigz
+Suggested packages:
+  cgroupfs-mount | cgroup-lite docker-model-plugin
+The following NEW packages will be installed:
+  containerd.io docker-buildx-plugin docker-ce docker-ce-cli
+  docker-ce-rootless-extras docker-compose-plugin pigz
+0 upgraded, 7 newly installed, 0 to remove and 47 not upgraded.
+Need to get 102 MB of archives.
+After this operation, 388 MB of additional disk space will be used.
+Get:1 http://cz.archive.ubuntu.com/ubuntu resolute/universe amd64 pigz amd64 2.8-1build1 [66.8 kB]
+Get:2 https://download.docker.com/linux/ubuntu resolute/stable amd64 containerd.io amd64 2.4.2-3~ubuntu.26.04~resolute [23.3 MB]
+Get:3 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-ce-cli amd64 5:29.9.1-1~ubuntu.26.04~resolute [17.6 MB]
+Get:4 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-ce amd64 5:29.9.1-1~ubuntu.26.04~resolute [24.6 MB]
+Get:5 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-buildx-plugin amd64 0.38.1-1~ubuntu.26.04~resolute [17.8 MB]
+Get:6 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-ce-rootless-extras amd64 5:29.9.2-1~ubuntu.26.04~resolute [10.2 MB]
+Get:7 https://download.docker.com/linux/ubuntu resolute/stable amd64 docker-compose-plugin amd64 5.6.1-1~ubuntu.26.04~resolute [8,085 kB]
+Fetched 102 MB in 4s (23.2 MB/s)
+(Selecting / Preparing to unpack / Unpacking lines omitted)
+Setting up docker-buildx-plugin (0.38.1-1~ubuntu.26.04~resolute)…
+Setting up containerd.io (2.4.2-3~ubuntu.26.04~resolute)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/containerd.service' → '/usr/lib/systemd/system/containerd.service'.
+Setting up docker-compose-plugin (5.6.1-1~ubuntu.26.04~resolute)…
+Setting up docker-ce-cli (5:29.9.1-1~ubuntu.26.04~resolute)…
+Setting up pigz (2.8-1build1)…
+Setting up docker-ce-rootless-extras (5:29.9.2-1~ubuntu.26.04~resolute)…
+Setting up docker-ce (5:29.9.1-1~ubuntu.26.04~resolute)…
+Created symlink '/etc/systemd/system/multi-user.target.wants/docker.service' → '/usr/lib/systemd/system/docker.service'.
+Created symlink '/etc/systemd/system/sockets.target.wants/docker.socket' → '/usr/lib/systemd/system/docker.socket'.
+Processing triggers for man-db (2.13.1-1build1)…
+(needrestart summary omitted: deferred service restarts and outdated ssh sessions, none related to Docker)
+Synchronizing state of docker.service with SysV service script with /usr/lib/systemd/systemd-sysv-install.
+Executing: /usr/lib/systemd/systemd-sysv-install enable docker
+[SUCCESS] Docker daemon responded; no remote test image was executed.
+[SUCCESS] === Docker installation completed successfully ===
+exit=0
+# The older pin was installed on a clean system. docker-ce-rootless-extras
+# (a dependency, not pinned) came in at 5:29.9.2.
+
+$ date
+Thu Oct 29 10:55:42 AM UTC 2026
+
+$ dpkg-query -W docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+containerd.io	2.4.2-3~ubuntu.26.04~resolute
+docker-buildx-plugin	0.38.1-1~ubuntu.26.04~resolute
+docker-ce	5:29.9.1-1~ubuntu.26.04~resolute
+docker-ce-cli	5:29.9.1-1~ubuntu.26.04~resolute
+docker-compose-plugin	5.6.1-1~ubuntu.26.04~resolute
+# Engine and CLI are at the pinned version; the other packages follow the repository.
+
+$ sudo docker version --format 'server={{.Server.Version}} client={{.Client.Version}}'
+server=29.9.1 client=29.9.1
+
+$ systemctl is-enabled docker; systemctl is-active docker
+enabled
+active
+
+$ sudo docker images; sudo docker ps -a
+(extra info hint line printed by docker images omitted)
+IMAGE   ID             DISK USAGE   CONTENT SIZE   EXTRA
+CONTAINER ID   IMAGE     COMMAND   CREATED   STATUS    PORTS     NAMES
+# No image pulled, no container run.
+
+$ ls -d /tmp/tmp.* 2>&1
+ls: cannot access '/tmp/tmp.*': No such file or directory
+
+$ grep -E '^(Start-Date|Commandline|End-Date)' /var/log/apt/history.log | tail -n 3
+Start-Date: 2026-10-29  10:54:43
+Commandline: apt-get -o Dpkg::Lock::Timeout=120 -o Acquire::Retries=3 install -y --no-upgrade docker-ce=5:29.9.1-1~ubuntu.26.04~resolute docker-ce-cli=5:29.9.1-1~ubuntu.26.04~resolute containerd.io docker-buildx-plugin docker-compose-plugin
+End-Date: 2026-10-29  10:55:29
+# The pin reached apt as docker-ce=... and docker-ce-cli=...; the transaction completed.

@@ -75,6 +75,23 @@ Test evidence is in `docs/test-results/install_nginx-run-*.txt`.
 
 Test evidence is in `docs/test-results/create_users-run-*.txt`. The tests ran on Ubuntu 22.04 in a container.
 
+## Docker notes
+
+`install_docker.sh` installs Docker CE from Docker's official APT repository and stops when it cannot verify what it is about to trust:
+
+- **Checks before changes.** It requires root, a supported OS (Ubuntu or Debian with a `VERSION_CODENAME`), systemd, and the `CAP_NET_ADMIN` and `CAP_SYS_ADMIN` capabilities. It stops if a conflicting package from the Ubuntu or Debian archive is installed (`docker.io`, `containerd`, `runc` and others) and removes nothing itself: in a test, installing `runc` silently removed `docker-ce` and `containerd.io`.
+- **The signing key is verified.** The key is downloaded to a private temporary directory and installed only if the file contains exactly one primary key and its fingerprint matches the one in the script. Otherwise nothing is written under `/etc`. If Docker rotates its key, the script fails instead of trusting the new one.
+- **An existing repository file is never overwritten.** If `/etc/apt/sources.list.d/docker.list` exists with different content, the script stops.
+- **Idempotent install.** It uses `--no-upgrade`, so running it again does not upgrade or restart a working Docker. APT waits up to 120 seconds for the dpkg lock and retries failed downloads.
+- **Version pin.** `DOCKER_VERSION` (for example `5:29.9.1-1~ubuntu.26.04~resolute`) pins `docker-ce` and `docker-ce-cli`, and the script checks both after the install. A different installed version stops the script; it never upgrades or downgrades. `containerd.io`, Buildx, Compose and the dependency `docker-ce-rootless-extras` follow the repository.
+- **UFW needs an explicit acknowledgement.** Ports published by Docker can bypass UFW. While UFW is active the script stops unless `ALLOW_DOCKER_WITH_UFW=true` is set. The variable is a declaration only; the `DOCKER-USER` chain is not checked.
+- **No test image.** The check asks the local daemon for its version, so nothing is pulled from a registry.
+- **No terminal on stdin.** With a terminal on stdin and piped output, `apt-get` stopped mid-install in early test runs and the script hung. The script now reads stdin from `/dev/null`. The cause of the stop was not fully established.
+- **No users are added to the `docker` group.** Membership is equivalent to root, so it stays an explicit decision.
+- **Known limits.** `gpg` leaves `/root/.gnupg` behind. There is no rollback: if a later step fails, the key, repository file and packages stay. The lock wait is shorter than a long unattended-upgrades run, which the script reports with APT's own message. Rootless mode and user namespace remapping are not configured. Rollback, full version pinning and these two options are planned for V2.
+
+Test evidence is in `docs/test-results/install_docker-run-*.txt`. The tests ran on Ubuntu 26.04 in a KVM virtual machine.
+
 ## Requirements
 
 - Ubuntu 22.04, 24.04 or 26.04, or Debian 12 or 13 (releases that still get free security updates). End-to-end testing was done on Ubuntu 26.04 only.
